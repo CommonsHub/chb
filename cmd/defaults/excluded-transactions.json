@@ -21,6 +21,20 @@
       "to": "0xf5d0181b80e1c793d98b95bff0e6cde1d27a3ef8",
       "amount": 5000,
       "reason": "EURe V1->V2 migration mint for EOA; legacy balance already counted."
+    },
+    {
+      "chain": "polygon",
+      "hash": "0xfae6ab7a5b077b3bb11a7387c1fa3448c3bd35d6c0b9c08e7879cfed4b1128cf",
+      "to": "0xf5d0181b80e1c793d98b95bff0e6cde1d27a3ef8",
+      "amount": 10989.85,
+      "reason": "EURe V1->V2 migration mint (Polygon) for hotwallet EOA; legacy balance already counted (was double-counting → 2x)."
+    },
+    {
+      "chain": "polygon",
+      "hash": "0xfae6ab7a5b077b3bb11a7387c1fa3448c3bd35d6c0b9c08e7879cfed4b1128cf",
+      "to": "0x6fdf0aae33e313d9c98d2aa19bcd8ef777912cbf",
+      "amount": 197.81,
+      "reason": "EURe V1->V2 migration mint (Polygon) for Monerium savings; legacy balance already counted (was double-counting → 2x)."
     }
   ]
 }

@@ -120,7 +120,7 @@
       "symbol": "EURb",
       "decimals": 6
     },
-    "odooGlAccountCode": "550016"
+    "odooGlAccountCode": "550021"
   },
   {
     "name": "☕️ Coffee",
@@ -136,7 +136,7 @@
       "symbol": "EURb",
       "decimals": 6
     },
-    "odooGlAccountCode": "550017"
+    "odooGlAccountCode": "550022"
   },
   {
     "name": "🏦 KBC",
@@ -171,8 +171,8 @@
         "decimals": 18
       }
     ],
-    "archivedAt": "2025-05-24",
-    "odooGlAccountCode": "550018"
+    "archivedAt": "2025-05-23",
+    "odooGlAccountCode": "550014"
   },
   {
     "name": "👛 Citizen Wallet",
@@ -196,8 +196,8 @@
         "decimals": 18
       }
     ],
-    "archivedAt": "2024-05-30",
-    "odooGlAccountCode": "550006"
+    "archivedAt": "2025-05-19",
+    "odooGlAccountCode": "550016"
   },
   {
     "name": "🔑 EOA (Brussels Pay) — Polygon",
@@ -221,7 +221,8 @@
         "decimals": 18
       }
     ],
-    "archivedAt": "2024-07-28"
+    "archivedAt": "2025-05-23",
+    "odooGlAccountCode": "550001"
   },
   {
     "name": "🏦 Monerium Savings — Polygon",
@@ -245,7 +246,8 @@
         "decimals": 18
       }
     ],
-    "archivedAt": "2026-05-26"
+    "archivedAt": "2026-05-26",
+    "odooGlAccountCode": "550012"
   },
   {
     "name": "🅆 WISE Main (BE57)",
@@ -296,5 +298,53 @@
     "odooJournalId": 25,
     "odooSyncSince": "2025-01-01",
     "archivedAt": "2025-04-30"
+  },
+  {
+    "name": "🏛️ Brussels Pay Multisig",
+    "slug": "brusselspay-multisig",
+    "provider": "etherscan",
+    "chain": "gnosis",
+    "chainId": 100,
+    "address": "0xdd080195Ee4d4EB96C36037d372744744eb44A96",
+    "walletType": "safe",
+    "token": {
+      "address": "0x420CA0f9B9b604cE0fd9C18EF134C705e5Fa3430",
+      "name": "EURe",
+      "symbol": "EURe",
+      "decimals": 18
+    },
+    "priorTokens": [
+      {
+        "address": "0xcB444e90D8198415266c6a2724b7900fb12FC56E",
+        "name": "EURe (legacy)",
+        "symbol": "EURe",
+        "decimals": 18
+      }
+    ],
+    "odooGlAccountCode": "550018",
+    "archivedAt": "2025-12-30"
+  },
+  {
+    "name": "👛 Citizen Wallet — Polygon",
+    "slug": "citizenwallet-polygon",
+    "provider": "etherscan",
+    "chain": "polygon",
+    "chainId": 137,
+    "address": "0x00952D1747A1a3C803f30534BFF11348a7D40651",
+    "walletType": "EOA",
+    "token": {
+      "address": "0xE0aEa583266584DafBB3f9C3211d5588c73fEa8d",
+      "name": "EURe",
+      "symbol": "EURe",
+      "decimals": 18
+    },
+    "priorTokens": [
+      {
+        "address": "0x18ec0A6E18E5bc3784fDd3a3634b31245ab704F6",
+        "name": "EURe (legacy)",
+        "symbol": "EURe",
+        "decimals": 18
+      }
+    ]
   }
 ]
