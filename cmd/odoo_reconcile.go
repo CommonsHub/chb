@@ -65,7 +65,7 @@ func odooJournalReconcile(creds *OdooCredentials, uid int, journalID int, assume
 	// deliberate, journal-wide "create partners" operation that scans every
 	// no-partner line (thousands on a Stripe journal) and belongs in the
 	// explicit `chb odoo journals <id> reconcile` command, not on every push.
-	return odooJournalReconcileInteractive(creds, uid, journalID, assumeYes, dryRun, verbose, false, false)
+	return odooJournalReconcileInteractive(creds, uid, journalID, assumeYes, dryRun, verbose, false, false, time.Time{})
 }
 
 // odooJournalReconcileInteractive is the variant that surfaces the
@@ -83,7 +83,7 @@ func odooJournalReconcile(creds *OdooCredentials, uid int, journalID int, assume
 // without threading a return value through every caller.
 var lastReconcileApplied int
 
-func odooJournalReconcileInteractive(creds *OdooCredentials, uid int, journalID int, assumeYes, dryRun, verbose, interactive, linkPartners bool) error {
+func odooJournalReconcileInteractive(creds *OdooCredentials, uid int, journalID int, assumeYes, dryRun, verbose, interactive, linkPartners bool, since time.Time) error {
 	lastReconcileApplied = 0
 	header := "Reconcile preview for journal #%d (local-only)"
 	if !dryRun {
@@ -115,7 +115,7 @@ func odooJournalReconcileInteractive(creds *OdooCredentials, uid int, journalID 
 	}
 
 	Progress("computing reconcile matches")
-	set, _, err := computeReconcileMatches(journalID, interactive)
+	set, _, err := computeReconcileMatches(journalID, interactive, since)
 	if err != nil {
 		if err == errNoLocalCandidates {
 			fmt.Printf("  %sNo open invoices or bills in the local private cache.%s\n", Fmt.Yellow, Fmt.Reset)
@@ -705,6 +705,45 @@ func partnerIDForStatementLine(creds *OdooCredentials, uid int, line odooStateme
 			[]interface{}{[]interface{}{line.ID}, map[string]interface{}{"partner_id": partnerID}}, nil)
 	}
 	return partnerID, nil
+}
+
+// resolveOrCreateOdooPartnerForBlockchainTx resolves the Odoo partner for a
+// blockchain tx from its Monerium counterpart, creating one when the counterpart
+// carries enough identity to do so safely: an on-chain address (handled by
+// resolveOdooPartnerBankForTransaction) or a bank IBAN paired with a real name
+// (a rent redeem → "XL Collective SRL" carrying its IBAN). A name with no
+// account number only ever *matches* an existing partner — never creates one,
+// since a bare name is too ambiguous to mint a new contact from. Returns 0 when
+// there's nothing to resolve on. Used by the metadata refresh so a relabelled
+// mint/redeem also gets its partner linked.
+func resolveOrCreateOdooPartnerForBlockchainTx(creds *OdooCredentials, uid int, tx TransactionEntry) int {
+	if _, pid := resolveOdooPartnerBankForTransaction(creds, uid, tx); pid > 0 {
+		return pid
+	}
+	name := strings.TrimSpace(tx.Counterparty)
+	if isEVMAddress(name) || ibanLikePattern.MatchString(name) {
+		name = "" // a raw address / IBAN is not a partner name
+	}
+	iban := transactionBankAccountNumber(tx)
+	if iban != "" && !isEVMAddress(iban) {
+		if name == "" {
+			return 0 // never create a nameless partner
+		}
+		pid, err := createOdooPartner(creds, uid, name)
+		if err != nil || pid == 0 {
+			return 0
+		}
+		if _, err := createOdooPartnerBank(creds, uid, pid, iban); err != nil {
+			Warnf("    %s⚠ link IBAN %s to partner #%d: %v%s", Fmt.Yellow, iban, pid, err, Fmt.Reset)
+		}
+		return pid
+	}
+	if name != "" {
+		if pid, _, err := findOdooPartnerByExactName(creds, uid, name); err == nil && pid > 0 {
+			return pid
+		}
+	}
+	return 0
 }
 
 func resolveOdooPartnerBankForTransaction(creds *OdooCredentials, uid int, tx TransactionEntry) (int, int) {

@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"math"
 	"os"
 	"path/filepath"
@@ -565,11 +566,23 @@ func updateOdooJournalLinesCacheCounterparts(journalID int, counterpartsByMoveID
 }
 
 func parseOdooLineNarration(narration string) map[string]interface{} {
-	if narration == "" {
+	// Odoo's narration is an HTML field: the JSON we write comes back wrapped
+	// in <p>…</p> (and occasionally with entities escaped). Parsing the raw
+	// string therefore failed for every line that had round-tripped through
+	// Odoo, which made metadata comparisons see "empty" and re-flag the same
+	// lines as stale on every run. Strip the wrapper (and fall back to entity
+	// unescaping) before unmarshalling.
+	s := normalizeNarration(narration)
+	if s == "" {
 		return nil
 	}
 	var meta map[string]interface{}
-	if err := json.Unmarshal([]byte(narration), &meta); err != nil {
+	if err := json.Unmarshal([]byte(s), &meta); err != nil {
+		if u := html.UnescapeString(s); u != s {
+			if err2 := json.Unmarshal([]byte(u), &meta); err2 == nil {
+				return meta
+			}
+		}
 		return nil
 	}
 	return meta

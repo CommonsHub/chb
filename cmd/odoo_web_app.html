@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CHB Transactions</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1c2733; --dim: #6b7a8c;
+    --green: #1c7a45; --red: #b23c30; --accent: #3c6491; --chip: #eceff3;
+    --border: #e5e8ec; --warn-bg: #b33; --warn-text: #fff; --amber: #b3781a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10151b; --card: #1a222c; --text: #e8edf2; --dim: #97a8b8;
+      --green: #57c489; --red: #e8837a; --accent: #8fb2d8; --chip: #232c38;
+      --border: #232c38; --amber: #d69a45;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif; padding-bottom: 40px; }
+  a { color: var(--accent); text-decoration: none; }
+  .banner { background: var(--warn-bg); color: var(--warn-text); text-align: center; padding: 6px 10px; font-weight: 700; letter-spacing: .06em; font-size: 13px; }
+  header { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--border); }
+  .headinner { max-width: 1220px; margin: 0 auto; }
+  .topbar { display: flex; align-items: baseline; gap: 12px; padding: 12px 14px 10px; }
+  .topbar h1 { font-size: 16px; font-weight: 600; flex: 0 0 auto; letter-spacing: -.01em; }
+  /* The meta absorbs the free space and truncates — it must never be the thing
+     that makes the page wider than the viewport. */
+  .topbar .meta { flex: 1 1 auto; min-width: 0; text-align: right; font-size: 12px;
+    color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gear { font-size: 20px; background: none; border: none; color: var(--text); cursor: pointer; padding: 4px; }
+  .chips { display: flex; gap: 8px; overflow-x: auto; padding: 8px 14px 10px; -webkit-overflow-scrolling: touch; }
+  .chip { flex: 0 0 auto; background: var(--chip); border: 1px solid var(--border); color: var(--text); border-radius: 999px; padding: 6px 14px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  main { padding: 12px 12px 0; max-width: 640px; margin: 0 auto; }
+  #detail { display: none; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; }
+  .card.tx { cursor: pointer; }
+  .card.needs { border-left: 4px solid var(--amber); }
+  .rechint { color: var(--amber); font-size: 12px; font-weight: 600; }
+  .txrow { display: flex; justify-content: space-between; gap: 10px; }
+  .txmain { min-width: 0; flex: 1; }
+  .txdesc { font-weight: 600; overflow-wrap: anywhere; }
+  /* The partner is the row's anchor, so it carries weight — not color. The
+     whole row is clickable, so painting it link-blue added noise, not signal. */
+  .txpartner { color: var(--text); font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+  .txpartner:hover { text-decoration: underline; text-underline-offset: 2px; }
+  .txpartner.noname { font-weight: 400; }
+  .txmemo { font-size: 13px; color: var(--dim); overflow-wrap: anywhere; }
+  .txmeta { margin-top: 4px; font-size: 13px; color: var(--dim); display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+  .amount { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; font-size: 15px; text-align: right; }
+  /* Transaction row: fixed grid slots — stacked on phones, columns on wide. */
+  .card.tx { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 3px 12px;
+    grid-template-areas: "partner amount" "mid mid" "acct journal"; align-items: center; }
+  .c-partner { grid-area: partner; min-width: 0; }
+  .c-amount { grid-area: amount; align-self: start; justify-self: end; }
+  .c-mid { grid-area: mid; min-width: 0; display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+  .c-acct { grid-area: acct; min-width: 0; }
+  .c-journal { grid-area: journal; justify-self: end; min-width: 0; }
+  .c-mid:empty, .c-acct:empty, .c-journal:empty { display: none; }
+  /* "Has a matched invoice/bill" is a one-bit fact in the list — the icon says
+     it, the transaction page says which. */
+  .txdoc { color: var(--dim); display: inline-flex; align-items: center; }
+  .txdoc svg { width: 14px; height: 14px; }
+  .txjournal { color: var(--dim); font-size: 12px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .txmemo { min-width: 0; }
+  .amount.pos { color: var(--green); } .amount.neg { color: var(--red); }
+  /* GL-account label: tinted, not loud — color identifies, text informs. */
+  .acct { background: hsla(var(--h,210),60%,50%,.11); color: hsl(var(--h,210),50%,34%); border: 1px solid hsla(var(--h,210),55%,45%,.24); border-radius: 5px; padding: 1px 7px; font-size: 11.5px; font-weight: 500; white-space: nowrap; max-width: 46vw; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: middle; }
+  @media (prefers-color-scheme: dark) { .acct { color: hsl(var(--h,210),65%,76%); background: hsla(var(--h,210),55%,55%,.15); border-color: hsla(var(--h,210),55%,60%,.32); } }
+  .datehead { margin: 16px 4px 8px; font-size: 11.5px; font-weight: 500; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+  .balcard { text-align: center; padding: 14px; }
+  .balsplit { margin-top: 10px; font-size: 13px; color: var(--dim); max-width: 420px; margin-left: auto; margin-right: auto; }
+  /* min-width:0 lets the nowrap name actually ellipsize — without it the flex
+     item refuses to shrink and pushes the whole page wider than the viewport. */
+  .balrow { display: flex; justify-content: space-between; gap: 12px; padding: 3px 2px; border-top: 1px solid var(--border); min-width: 0; }
+  .balrow .n { flex: 1 1 auto; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .balrow b { flex: 0 0 auto; }
+  .balsplit b { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+  .balsplit .pos { color: var(--green); } .balsplit .neg { color: var(--red); }
+  .pill { font-size: 11px; border-radius: 6px; padding: 1px 7px; background: var(--chip); color: var(--dim); }
+  .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
+  .stat { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; text-align: center; }
+  .stat .v { font-weight: 700; font-size: 16px; font-variant-numeric: tabular-nums; }
+  .stat .l { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; margin-top: 2px; }
+  .pagehead { display: flex; align-items: baseline; gap: 10px; margin: 6px 2px 14px; flex-wrap: wrap; }
+  .pagehead h2 { font-size: 19px; }
+  .back { font-size: 14px; }
+  .more { display: block; width: 100%; padding: 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--card); color: var(--accent); font-size: 15px; cursor: pointer; margin: 4px 0 20px; }
+  .dim { color: var(--dim); } .small { font-size: 13px; }
+  .loading { text-align: center; color: var(--dim); padding: 30px 0; }
+  .error { color: var(--red); padding: 16px; text-align: center; }
+  /* settings */
+  .setting-group { margin-bottom: 18px; }
+  .setting-group h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); margin-bottom: 8px; }
+  .opt { display: flex; align-items: center; gap: 10px; padding: 10px 6px; border-bottom: 1px solid var(--border); font-size: 15px; }
+  .opt input { width: 18px; height: 18px; accent-color: var(--accent); }
+  .ext { font-size: 12px; }
+  /* ── Laptop / iPad: master-detail split, one aligned row per tx ──
+     Discipline over decoration: every row shares the same four columns
+     (partner | context | account | amount), so the eye scans vertically.
+     Color is reserved for meaning: amount sign, account identity, and a
+     single amber dot for "needs attention". Everything else stays quiet. */
+  @media (min-width: 900px) {
+    .split { display: flex; align-items: flex-start; max-width: 1220px; margin: 0 auto; gap: 0; }
+    main { flex: 1; max-width: none; min-width: 0; padding: 12px 20px 0; }
+    /* Header sits on the same grid as the content — it was spanning the full
+       viewport while the list was centred, which read as a broken layout. */
+    .headinner { padding: 0 20px; }
+    .topbar, .chips { padding-left: 0; padding-right: 0; }
+    #detail { display: block; flex: 0 0 420px; width: 420px; padding: 12px 16px 20px;
+      border-left: 1px solid var(--border); position: sticky; top: 0;
+      max-height: 100vh; overflow-y: auto; }
+    #detail[hidden] { display: none; }
+    /* Rows read as a table: flat list, hairline separators, no card chrome.
+       Every field owns a column — a memo-less row must not slide the journal
+       leftwards, or the eye loses the vertical line to scan down. */
+    main .card.tx { grid-template-columns: 230px minmax(0,1fr) 176px 116px;
+      grid-template-areas: "partner mid acct amount"; align-items: center;
+      gap: 0 16px; padding: 8px 12px; margin-bottom: 0; border: none;
+      border-radius: 8px; background: none; }
+    main.multi .card.tx { grid-template-columns: 230px minmax(0,1fr) 132px 176px 116px;
+      grid-template-areas: "partner mid journal acct amount"; }
+    /* With the detail panel open the list loses ~420px: spend what's left on
+       the memo (the only variable-length field) by dropping the journal column
+       and tightening the fixed ones, instead of crushing the memo to "d…". */
+    .split.with-detail main .card.tx { grid-template-columns: 180px minmax(0,1fr) 156px 104px;
+      grid-template-areas: "partner mid acct amount"; gap: 0 12px; }
+    .split.with-detail main.multi .card.tx { grid-template-columns: 180px minmax(0,1fr) 156px 104px;
+      grid-template-areas: "partner mid acct amount"; }
+    .split.with-detail main.multi .card.tx .c-journal { display: none; }
+    .split.with-detail main .card.tx .c-acct,
+    .split.with-detail main .card.tx .c-acct .acct { max-width: 156px; }
+    main .card.tx .c-journal { display: none; }
+    main.multi .card.tx .c-journal { display: block; justify-self: start; }
+    main .card.tx .txjournal { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    main .card.tx:hover { background: var(--card); }
+    main .card.tx + .card.tx { border-top: 1px solid var(--border); border-radius: 0; }
+    main .card.tx .c-mid { flex-direction: row; align-items: baseline; gap: 10px; overflow: hidden; flex-wrap: nowrap; }
+    main .card.tx .txdoc { flex: 0 0 auto; align-self: center; }
+    main .card.tx .txmemo { flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    main .card.tx .rechint { display: none; }
+    main .card.tx .c-acct { justify-self: start; max-width: 176px; }
+    main .card.tx .c-acct .acct { max-width: 176px; }
+    main .card.tx .c-amount { align-self: center; justify-self: stretch; text-align: right; }
+    main .card.tx .txpartner { font-size: 14px; }
+    main .card.tx.needs { border-left: none; }
+    main .card.tx.needs .c-partner::before { content: "●"; color: var(--amber); font-size: 8px; margin-right: 7px; vertical-align: 2px; }
+    main .card.tx.active { background: var(--card); box-shadow: inset 3px 0 0 var(--accent); }
+    .datehead { margin: 18px 12px 6px; }
+    /* Balance strip: total left, per-journal table right. */
+    .balcard { display: flex; align-items: center; justify-content: space-between; text-align: left; padding: 12px 16px; gap: 24px; }
+    .balsplit { margin: 0; max-width: 380px; flex: 1; }
+    .balrow { border-top: none; padding: 1px 0; }
+  }
+</style>
+</head>
+<body>
+<div id="banner" class="banner" style="display:none">⚠ TEST DATABASE</div>
+<header>
+  <div class="headinner">
+    <div class="topbar">
+      <h1 id="title">Transactions</h1>
+      <span class="meta"><span id="dbLabel"></span> <span id="syncLabel"></span></span>
+      <button class="gear" onclick="location.hash='#/settings'" title="Settings">⚙︎</button>
+    </div>
+    <div class="chips" id="chips" style="display:none"></div>
+  </div>
+</header>
+<div class="split">
+  <main id="main"><div class="loading">Loading…</div></main>
+  <aside id="detail" hidden></aside>
+</div>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const store = {
+  get db() { return localStorage.getItem('chbweb.db') || ''; },
+  set db(v) { localStorage.setItem('chbweb.db', v); },
+  journals(db) { try { return JSON.parse(localStorage.getItem('chbweb.journals.' + db)) } catch { return null } },
+  setJournals(db, ids) { localStorage.setItem('chbweb.journals.' + db, JSON.stringify(ids)); },
+  get filter() { return localStorage.getItem('chbweb.filter') || 'all'; },
+  set filter(v) { localStorage.setItem('chbweb.filter', v); },
+};
+let CONFIG = { databases: [] };
+let JOURNALS = [];           // [{id,name}] for current db
+let txOffset = 0;
+let txLastDate = '';         // last rendered date header (survives Load more)
+const PAGE = 30;
+
+const fmtAmount = (a) => (a > 0 ? '+' : '') + a.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
+const esc = (s) => (s || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// Consistent, maximally-distinct color per GL account: each code gets a hue
+// on first sight, assigned by golden-angle spacing over its registration
+// index — so the first ~15 accounts you encounter are all far apart on the
+// color wheel. The code→index map persists in localStorage, keeping 700003
+// the same color on every page and across sessions. (Hashing the code itself
+// doesn't work: chart-of-account numbers are so structured that any formula
+// aliases several common codes onto near-identical hues.)
+let ACCT_COLORS = null;
+const acctHue = (code) => {
+  if (!ACCT_COLORS) { try { ACCT_COLORS = JSON.parse(localStorage.getItem('chbweb.acctColors')) || {}; } catch { ACCT_COLORS = {}; } }
+  if (!(code in ACCT_COLORS)) {
+    ACCT_COLORS[code] = Object.keys(ACCT_COLORS).length;
+    localStorage.setItem('chbweb.acctColors', JSON.stringify(ACCT_COLORS));
+  }
+  return Math.round(ACCT_COLORS[code] * 137.5) % 360;
+};
+const fmtDay = (d) => { try { return new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }); } catch { return d; } };
+// Paperclip: "this line is matched to a document". Which document is a detail,
+// so it lives on the transaction page, not in every row.
+const CLIP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>';
+function fmtAgo(iso) {
+  if (!iso) return '';
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 90) return 'just now';
+  if (s < 3600) return Math.round(s / 60) + 'm ago';
+  if (s < 86400) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
+}
+
+async function api(path, params = {}) {
+  params.db = store.db;
+  const qs = new URLSearchParams(params).toString();
+  const res = await fetch('/api/' + path + '?' + qs);
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+
+// The three "main" journals (savings / checking / stripe, matched by name).
+// They are the default selection until the user saves an explicit one.
+function mainJournalIDs() {
+  const ids = JOURNALS.filter((j) => ['saving', 'checking', 'stripe'].some((k) => j.name.toLowerCase().includes(k))).map((j) => j.id);
+  return ids.length ? ids : JOURNALS.map((j) => j.id);
+}
+function enabledJournalIDs() {
+  const saved = store.journals(store.db);
+  const all = JOURNALS.map((j) => j.id);
+  return saved === null ? mainJournalIDs() : all.filter((id) => saved.includes(id));
+}
+
+function selectedJournalIDs() {
+  const enabled = enabledJournalIDs();
+  const f = store.filter;
+  if (f === 'all') return enabled;
+  if (f.startsWith('j:')) { const id = +f.slice(2); return enabled.includes(id) ? [id] : enabled; }
+  const match = JOURNALS.filter((j) => enabled.includes(j.id) && j.name.toLowerCase().includes(f));
+  return match.length ? match.map((j) => j.id) : enabled;
+}
+
+function renderChips() {
+  const el = $('chips');
+  const enabledIDs = enabledJournalIDs();
+  const enabled = JOURNALS.filter((j) => enabledIDs.includes(j.id));
+  const shortcuts = [['all', 'All']];
+  for (const key of ['saving', 'checking', 'stripe']) {
+    if (enabled.some((j) => j.name.toLowerCase().includes(key)))
+      shortcuts.push([key, key === 'saving' ? 'Savings' : key[0].toUpperCase() + key.slice(1)]);
+  }
+  for (const j of enabled) {
+    const n = j.name.toLowerCase();
+    if (!['saving', 'checking', 'stripe'].some((k) => n.includes(k))) shortcuts.push(['j:' + j.id, j.name]);
+  }
+  el.innerHTML = shortcuts.map(([key, label]) =>
+    `<button class="chip${store.filter === key ? ' active' : ''}" data-f="${esc(key)}">${esc(label)}</button>`).join('');
+  el.style.display = '';
+  el.querySelectorAll('.chip').forEach((b) => b.onclick = () => { store.filter = b.dataset.f; txOffset = 0; renderChips(); loadTxList(true); });
+}
+
+// txCard renders one transaction with a fixed information hierarchy:
+// partner → amount → linked bill/invoice → description → GL account →
+// journal (the journal pill only when the current view spans several).
+// The date lives OUTSIDE the card: renderTxCards emits one date header per
+// day so same-day transactions group visually.
+// needsReconciliation flags a line with no linked document that isn't settled
+// yet — except donations and memberships, which legitimately live on their
+// income account without an invoice to match.
+function needsReconciliation(t) {
+  if (t.reconciled || t.matchedName) return false;
+  return !/\bdons?\b|donation|membership|cotisation/i.test((t.accountName || '') + ' ' + (t.ref || ''));
+}
+
+// txCard renders one transaction as a fixed set of grid slots so rows align
+// into calm columns on wide screens (partner | context | account | amount)
+// and stack cleanly on phones. Slots render empty rather than shifting.
+function txCard(t, opts = {}) {
+  const showJournal = opts.showJournal !== false;
+  const cls = t.amount >= 0 ? 'pos' : 'neg';
+  const hasPartner = !!t.partnerId;
+  const needs = needsReconciliation(t);
+  const title = hasPartner
+    ? `<a class="txpartner" href="#/partner/${t.partnerId}">${esc(t.partnerName)}</a>`
+    : `<span class="txpartner noname">${esc(t.ref) || '(no description)'}</span>`;
+  const doc = t.matchedName
+    ? `<span class="txdoc" title="Matched: ${esc(t.matchedName)}">${CLIP}</span>` : '';
+  const memo = hasPartner && t.ref ? `<span class="txmemo" title="${esc(t.ref)}">${esc(t.ref)}</span>` : '';
+  const journal = showJournal ? `<span class="txjournal" title="${esc(t.journalName)}">${esc(t.journalName)}</span>` : '';
+  const rechint = needs ? `<span class="rechint">⚠ needs reconciliation — tap to match</span>` : '';
+  const acct = t.accountCode
+    ? `<a class="acct" style="--h:${acctHue(t.accountCode)}" href="#/account/${esc(t.accountCode)}" title="${esc(t.accountCode)} — ${esc(t.accountName)}">${esc(t.accountName || t.accountCode)}</a>` : '';
+  return `<div class="card tx${needs ? ' needs' : ''}" data-tx="${t.id}">
+    <div class="c-partner">${title}</div>
+    <div class="c-mid">${doc}${memo}${rechint}</div>
+    <div class="c-journal">${journal}</div>
+    <div class="c-acct">${acct}</div>
+    <div class="c-amount amount ${cls}">${fmtAmount(t.amount)}</div>
+  </div>`;
+}
+
+// Wide screens (laptop / iPad landscape) get a master-detail split: the list
+// stays on the left and detail pages render into the side panel.
+const WIDE = window.matchMedia('(min-width: 900px)');
+let listReady = false;
+function detailRoot() { return WIDE.matches ? $('detail') : $('main'); }
+function highlightActive(txId) {
+  document.querySelectorAll('.card.tx.active').forEach((c) => c.classList.remove('active'));
+  if (txId) document.querySelector(`.card.tx[data-tx="${txId}"]`)?.classList.add('active');
+}
+
+// renderTxCards emits cards with a date header whenever the day changes.
+// prevDate carries the last rendered day across "Load more" pages so a day
+// spanning two pages doesn't get a duplicate header.
+function renderTxCards(txs, opts = {}, prevDate = '') {
+  let html = '', last = prevDate;
+  for (const t of txs) {
+    if (t.date !== last) { html += `<div class="datehead">${esc(fmtDay(t.date))}</div>`; last = t.date; }
+    html += txCard(t, opts);
+  }
+  return { html, lastDate: last };
+}
+
+// Tapping a card (anywhere except a link inside it) opens the transaction page.
+document.addEventListener('click', (e) => {
+  const card = e.target.closest('.card.tx');
+  if (!card || e.target.closest('a')) return;
+  location.hash = '#/tx/' + card.dataset.tx;
+});
+
+async function loadTx(id, root) {
+  root = root || $('main');
+  root.innerHTML = '<div class="loading">Loading…</div>';
+  if (root === $('main')) $('chips').style.display = 'none';
+  try {
+    const data = await api('transaction', { id });
+    const t = data.transaction;
+    const cls = t.amount >= 0 ? 'pos' : 'neg';
+    const row = (label, html) => html ? `<div class="opt"><span class="dim small" style="min-width:90px">${label}</span><span style="overflow-wrap:anywhere">${html}</span></div>` : '';
+    const candidates = (data.candidates || []).map((c) => `
+      <div class="card"><div class="txrow">
+        <div class="txmain">
+          <div class="txdesc"><a href="${esc(c.odooUrl)}" target="_blank" rel="noopener">📄 ${esc(c.name)}</a>${c.ref ? ` <span class="dim small">${esc(c.ref)}</span>` : ''}</div>
+          <div class="txmeta">
+            <span>${esc(c.date)}</span>${c.partner ? `<span>${esc(c.partner)}</span>` : ''}
+            ${c.reasons.map((r) => `<span class="pill">${esc(r)}</span>`).join('')}
+          </div>
+        </div>
+        <div class="amount">${fmtAmount(c.residual)}<div class="dim small" style="font-weight:400;text-align:right">open</div></div>
+      </div></div>`).join('');
+    const candidateSection = t.matchedName || t.reconciled ? '' : `
+      <div class="pagehead" style="margin-top:20px"><h2 style="font-size:16px">Reconcile candidates</h2>
+        <span class="dim small">open ${t.amount >= 0 ? 'invoices' : 'bills'}</span></div>
+      ${candidates || '<div class="card dim small">No open ' + (t.amount >= 0 ? 'invoices' : 'bills') + ' look related.</div>'}
+      ${data.reconcileUrl ? `<a class="more" style="text-align:center" href="${esc(data.reconcileUrl)}" target="_blank" rel="noopener">Open reconciliation in Odoo →</a>` : ''}`;
+    root.innerHTML = `
+      <div class="pagehead"><a class="back" href="#/">← Back</a><h2>Transaction #${t.id}</h2></div>
+      <div class="card" style="text-align:center;padding:22px 14px">
+        <div class="amount ${cls}" style="font-size:30px">${fmtAmount(t.amount)}</div>
+        <div class="dim" style="margin-top:4px">${esc(t.date)}</div>
+        <div class="txdesc" style="margin-top:10px;font-size:17px">${esc(t.ref) || '<span class="dim">(no description)</span>'}</div>
+      </div>
+      <div class="card" style="padding:4px 14px">
+        ${row('Partner', t.partnerId ? `<a href="#/partner/${t.partnerId}">${esc(t.partnerName)}</a>` : '')}
+        ${row('Account', t.accountCode ? `<a class="acct" style="--h:${acctHue(t.accountCode)}" href="#/account/${esc(t.accountCode)}">${esc(t.accountName) || esc(t.accountCode)}</a> <span class="dim small">${esc(t.accountCode)}</span>` : '')}
+        ${row('Journal', esc(t.journalName))}
+        ${row('Status', t.reconciled ? '✅ reconciled' : '<span class="dim">not reconciled</span>')}
+        ${row('Document', t.matchedName ? `<a href="${esc(t.matchedUrl)}" target="_blank" rel="noopener">📎 ${esc(t.matchedName)}</a>` : '')}
+        ${row('Source', t.sourceUrl ? `<a href="${esc(t.sourceUrl)}" target="_blank" rel="noopener">↗ ${esc(t.sourceLabel)}</a>` : '')}
+        ${row('Odoo', t.odooUrl ? `<a href="${esc(t.odooUrl)}" target="_blank" rel="noopener">⧉ open in Odoo</a>` : '')}
+      </div>
+      ${candidateSection}
+      <button class="more" id="share">Share this transaction</button>`;
+    $('share').onclick = async () => {
+      const url = location.href;
+      const title = `${fmtAmount(t.amount)} — ${t.ref || 'transaction #' + t.id} (${t.date})`;
+      if (navigator.share) { try { await navigator.share({ title, url }); } catch {} }
+      else { await navigator.clipboard.writeText(url); $('share').textContent = 'Link copied ✓'; }
+    };
+  } catch (e) { root.innerHTML = `<div class="error">${esc(e.message)}</div>`; }
+}
+
+function balanceStrip(bal, ids) {
+  const cls = bal.total >= 0 ? 'pos' : 'neg';
+  const single = ids.length === 1;
+  const label = single
+    ? esc((bal.journals[0] || {}).journalName || 'balance')
+    : `${bal.journals.length} journals`;
+  const split = !single && bal.journals.length > 1
+    ? `<div class="balsplit">${bal.journals.map((j) =>
+        `<div class="balrow"><span class="n">${esc(j.journalName)}</span><b class="${j.balance >= 0 ? 'pos' : 'neg'}">${fmtAmount(j.balance)}</b></div>`).join('')}</div>`
+    : '';
+  return `<div class="card balcard">
+    <div class="amount ${cls}" style="font-size:24px">${fmtAmount(bal.total)}</div>
+    <div class="dim small">current balance · ${label}</div>
+    ${split}
+  </div>`;
+}
+
+async function loadTxList(reset) {
+  if (reset) { $('main').innerHTML = '<div class="loading">Loading…</div>'; txOffset = 0; txLastDate = ''; }
+  try {
+    const ids = selectedJournalIDs();
+    let balHTML = '';
+    let data;
+    if (reset) {
+      const [txData, bal] = await Promise.all([
+        api('transactions', { journals: ids.join(','), limit: PAGE, offset: txOffset }),
+        api('balances', { journals: ids.join(',') }).catch(() => null),
+      ]);
+      data = txData;
+      if (bal) {
+        balHTML = balanceStrip(bal, ids);
+        $('syncLabel').textContent = bal.lastSync ? '· synced ' + fmtAgo(bal.lastSync) : '';
+        $('syncLabel').title = bal.lastSync ? 'chb last synced these journals ' + new Date(bal.lastSync).toLocaleString() : '';
+      }
+    } else {
+      data = await api('transactions', { journals: ids.join(','), limit: PAGE, offset: txOffset });
+    }
+    // Hide the journal pill when a single account is selected — it would
+    // repeat the active filter chip on every card.
+    $('main').classList.toggle('multi', ids.length > 1);
+    const rendered = renderTxCards(data.transactions, { showJournal: ids.length > 1 }, txLastDate);
+    txLastDate = rendered.lastDate;
+    const cards = rendered.html;
+    const moreBtn = data.transactions.length === PAGE ? '<button class="more" id="more">Load more</button>' : '';
+    if (reset) $('main').innerHTML = balHTML + (cards || '<div class="loading">No transactions</div>') + moreBtn;
+    else { $('more')?.remove(); $('main').insertAdjacentHTML('beforeend', cards + moreBtn); }
+    txOffset += data.transactions.length;
+    const btn = $('more'); if (btn) btn.onclick = () => loadTxList(false);
+  } catch (e) { $('main').innerHTML = `<div class="error">${esc(e.message)}</div>`; }
+}
+
+async function loadPartner(id, root) {
+  root = root || $('main');
+  root.innerHTML = '<div class="loading">Loading…</div>';
+  if (root === $('main')) $('chips').style.display = 'none';
+  try {
+    const data = await api('partner', { id });
+    const p = data.partner, t = data.totals;
+    root.innerHTML = `
+      <div class="pagehead"><a class="back" href="#/">← Back</a><h2>${esc(p.name)}</h2>
+        <a class="ext" href="${esc(p.odooUrl)}" target="_blank" rel="noopener">⧉ Odoo</a></div>
+      ${p.email ? `<div class="small dim" style="margin:-8px 2px 12px">${esc(p.email)}</div>` : ''}
+      <div class="summary">
+        <div class="stat"><div class="v">${t.count}</div><div class="l">txs</div></div>
+        <div class="stat"><div class="v" style="color:var(--green)">${fmtAmount(t.in)}</div><div class="l">in</div></div>
+        <div class="stat"><div class="v" style="color:var(--red)">${fmtAmount(t.out)}</div><div class="l">out</div></div>
+      </div>
+      ${renderTxCards(data.transactions).html || '<div class="loading">No transactions</div>'}`;
+  } catch (e) { root.innerHTML = `<div class="error">${esc(e.message)}</div>`; }
+}
+
+async function loadAccount(code, root) {
+  root = root || $('main');
+  root.innerHTML = '<div class="loading">Loading…</div>';
+  if (root === $('main')) $('chips').style.display = 'none';
+  try {
+    const data = await api('account', { code });
+    const a = data.account, t = data.totals;
+    let lines = '', lastDay = '';
+    for (const l of data.lines) {
+      if (l.date !== lastDay) { lines += `<div class="datehead">${esc(fmtDay(l.date))}</div>`; lastDay = l.date; }
+      const cls = l.amount >= 0 ? 'pos' : 'neg';
+      const partner = l.partnerId ? `<a href="#/partner/${l.partnerId}">${esc(l.partnerName)}</a>` : '';
+      lines += `<div class="card"><div class="txrow">
+        <div class="txmain">
+          <div class="txdesc">${esc(l.name) || esc(l.moveName)}</div>
+          <div class="txmeta">${partner ? `<span>${partner}</span>` : ''}
+            <a class="ext" href="${esc(l.moveUrl)}" target="_blank" rel="noopener">${esc(l.moveName)}</a>
+            <span class="pill">${esc(l.journalName)}</span></div>
+        </div>
+        <div class="amount ${cls}">${fmtAmount(l.amount)}</div>
+      </div></div>`;
+    }
+    root.innerHTML = `
+      <div class="pagehead"><a class="back" href="#/">← Back</a><h2><span class="acct" style="--h:${acctHue(a.code)};font-size:15px">${esc(a.code)}</span> ${esc(a.name)}</h2>
+        <a class="ext" href="${esc(a.odooUrl)}" target="_blank" rel="noopener">⧉ Odoo</a></div>
+      <div class="summary" style="grid-template-columns:repeat(4,1fr)">
+        <div class="stat"><div class="v">${t.count}</div><div class="l">entries</div></div>
+        <div class="stat"><div class="v">${fmtAmount(t.balance)}</div><div class="l">balance</div></div>
+        <div class="stat"><div class="v">${fmtAmount(t.debit)}</div><div class="l">debit</div></div>
+        <div class="stat"><div class="v">${fmtAmount(t.credit)}</div><div class="l">credit</div></div>
+      </div>
+      ${lines || '<div class="loading">No entries</div>'}`;
+  } catch (e) { root.innerHTML = `<div class="error">${esc(e.message)}</div>`; }
+}
+
+function loadSettings(root) {
+  root = root || $('main');
+  if (root === $('main')) $('chips').style.display = 'none';
+  const enabledIDs = enabledJournalIDs();
+  const dbOpts = CONFIG.databases.map((db) =>
+    `<label class="opt"><input type="radio" name="db" value="${esc(db)}" ${db === store.db ? 'checked' : ''}> ${esc(db)}${db.includes('test') ? ' <span class="pill">test</span>' : ''}</label>`).join('');
+  const jOpts = JOURNALS.map((j) =>
+    `<label class="opt"><input type="checkbox" class="jsel" value="${j.id}" ${enabledIDs.includes(j.id) ? 'checked' : ''}> ${esc(j.name)} <span class="pill">#${j.id}</span></label>`).join('');
+  root.innerHTML = `
+    <div class="pagehead"><a class="back" href="#/">← Back</a><h2>Settings</h2></div>
+    <div class="setting-group"><h3>Database</h3>${dbOpts}</div>
+    <div class="setting-group"><h3>Journals</h3>${jOpts || '<div class="dim small">Loading…</div>'}</div>`;
+  root.querySelectorAll('input[name=db]').forEach((r) => r.onchange = async () => {
+    store.db = r.value; await initDB(); loadSettings(root);
+    if (WIDE.matches) { listReady = false; renderChips(); loadTxList(true); listReady = true; }
+  });
+  root.querySelectorAll('.jsel').forEach((c) => c.onchange = () => {
+    const ids = [...root.querySelectorAll('.jsel:checked')].map((x) => +x.value);
+    store.setJournals(store.db, ids);
+    // In split view the list is visible next to the settings — refresh it live.
+    if (WIDE.matches) { renderChips(); loadTxList(true); }
+  });
+}
+
+function route() {
+  const h = location.hash || '#/';
+  const mPartner = h.match(/^#\/partner\/(\d+)/);
+  const mAccount = h.match(/^#\/account\/([\w.]+)/);
+  const mTx = h.match(/^#\/tx\/(\d+)/);
+  const isDetail = h === '#/settings' || mPartner || mAccount || mTx;
+
+  if (WIDE.matches) {
+    // Split view: the list stays mounted on the left; detail routes render
+    // into the side panel instead of replacing the page.
+    if (!listReady) { renderChips(); loadTxList(true); listReady = true; }
+    else $('chips').style.display = '';
+    const det = $('detail');
+    document.querySelector('.split').classList.toggle('with-detail', !!isDetail);
+    if (isDetail) {
+      det.hidden = false;
+      if (h === '#/settings') loadSettings(det);
+      else if (mPartner) loadPartner(+mPartner[1], det);
+      else if (mAccount) loadAccount(mAccount[1], det);
+      else if (mTx) loadTx(+mTx[1], det);
+    } else {
+      det.hidden = true;
+      det.innerHTML = '';
+    }
+    highlightActive(mTx ? +mTx[1] : 0);
+    return;
+  }
+
+  listReady = false;
+  if (h === '#/settings') return loadSettings();
+  if (mPartner) return loadPartner(+mPartner[1]);
+  if (mAccount) return loadAccount(mAccount[1]);
+  if (mTx) return loadTx(+mTx[1]);
+  renderChips();
+  loadTxList(true);
+}
+// Re-route when crossing the phone/laptop breakpoint (e.g. iPad rotation).
+WIDE.addEventListener('change', () => { listReady = false; route(); });
+
+async function initDB() {
+  $('dbLabel').textContent = store.db;
+  $('banner').style.display = store.db.includes('test') ? '' : 'none';
+  JOURNALS = [];
+  try {
+    const data = await api('journals');
+    JOURNALS = data.journals;
+  } catch (e) { $('main').innerHTML = `<div class="error">${esc(e.message)}</div>`; }
+}
+
+(async function init() {
+  try {
+    CONFIG = await (await fetch('/api/config')).json();
+    if (!store.db || !CONFIG.databases.includes(store.db)) store.db = CONFIG.databases[0] || '';
+    await initDB();
+    window.addEventListener('hashchange', route);
+    route();
+  } catch (e) { $('main').innerHTML = `<div class="error">${esc(e.message)}</div>`; }
+})();
+</script>
+</body>
+</html>

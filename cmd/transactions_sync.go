@@ -724,36 +724,36 @@ func TransactionsSync(args []string) (int, error) {
 							fmt.Printf("    %sFetched %d orders%s\n", Fmt.Dim, len(orders), Fmt.Reset)
 						}
 
-						// Check if latest order matches cache — skip if no new data
 						slug := acc.Slug
 						if slug == "" {
 							slug = acc.Address[:8]
 						}
 						filename := moneriumsource.FileName(slug)
-						if !force && len(orders) > 0 {
-							relPathFn := func(year, month string) string {
-								return moneriumsource.RelPath(filename)
-							}
-							if allMonthsCached(DataDir(), startMonth, endMonth, relPathFn) {
-								cachedPath := currentMonthCacheFile(DataDir(), relPathFn)
-								if orders[0].ID == moneriumsource.LatestCachedOrderID(cachedPath) {
-									if !accountSyncMode {
-										fmt.Printf("    %s✓ Up to date%s\n", Fmt.Green, Fmt.Reset)
-									}
-									continue
-								}
-							}
-						}
+
+						// Note: we deliberately do NOT short-circuit on "latest
+						// order ID unchanged" here. That optimisation assumed the
+						// newest order is always the most recently *placed* one, so
+						// an unchanged head meant nothing anywhere had changed — but
+						// a redeem placed late in a past month (after that month's
+						// file was last written) is not the global head, so the
+						// short-circuit dropped it. The per-month comparison below
+						// is cheap (a small JSON read per month) and skips unchanged
+						// months anyway, so correctness wins.
 
 						// Group by month
 						byMonth := moneriumsource.GroupByMonth(orders, BrusselsTZ())
 						saved := 0
 
 						for ym, monthOrders := range byMonth {
-							if ym < startMonth || ym > endMonth {
-								continue
-							}
-
+							// Do NOT clamp to [startMonth, endMonth]: that window is
+							// the blockchain fetch range, but a Monerium order can be
+							// placed in a month well before the on-chain checkpoint
+							// (e.g. a rent redeem processed at 21:59 UTC on the 30th,
+							// landing in the prior month, pulled incrementally from a
+							// July checkpoint). FetchOrders returns the full history,
+							// and moneriumMonthOrdersChanged below skips genuinely
+							// unchanged months, so iterating every month is both cheap
+							// and correct.
 							parts := strings.Split(ym, "-")
 							if len(parts) != 2 {
 								continue
@@ -764,10 +764,18 @@ func TransactionsSync(args []string) (int, error) {
 							relPath := moneriumsource.RelPath(filename)
 							filePath := filepath.Join(dataDir, year, month, relPath)
 
-							if !force && fileExists(filePath) {
-								if ym != fmt.Sprintf("%d-%02d", now.Year(), now.Month()) {
-									continue
-								}
+							// Rewrite a past-month file only when its order set has
+							// actually changed. A blanket "skip past months that
+							// already have a file" (the previous behaviour) silently
+							// dropped orders placed late in a month — e.g. a rent
+							// redeem on the 30th, after that month's file was last
+							// written on the 23rd — because FetchOrders returns the
+							// full history but the month it belongs to is no longer
+							// "current". Comparing the fetched month set against the
+							// cache backfills those late arrivals while still skipping
+							// genuinely-unchanged months.
+							if !force && fileExists(filePath) && !moneriumMonthOrdersChanged(filePath, monthOrders) {
+								continue
 							}
 
 							cache := moneriumsource.CacheFile{
@@ -785,9 +793,11 @@ func TransactionsSync(args []string) (int, error) {
 							totalProcessed += len(monthOrders)
 						}
 
-						if saved > 0 {
-							if !accountSyncMode {
+						if !accountSyncMode {
+							if saved > 0 {
 								fmt.Printf("    %s✓ Saved %d months%s\n", Fmt.Green, saved, Fmt.Reset)
+							} else {
+								fmt.Printf("    %s✓ Up to date%s\n", Fmt.Green, Fmt.Reset)
 							}
 						}
 					}
@@ -850,6 +860,31 @@ func TransactionsSync(args []string) (int, error) {
 	UpdateSyncSource("transactions", isFullSync)
 	UpdateSyncActivity(isFullSync)
 	return totalProcessed, nil
+}
+
+// moneriumMonthOrdersChanged reports whether the set of Monerium order IDs
+// freshly fetched for a month differs from what the cached month file holds.
+// Used to backfill late-arriving orders into a past month's file without
+// rewriting genuinely-unchanged months on every pull. Treats an unreadable /
+// missing cache as changed (so it gets written).
+func moneriumMonthOrdersChanged(filePath string, monthOrders []moneriumsource.Order) bool {
+	cached, ok := moneriumsource.LoadCache(filePath)
+	if !ok {
+		return true
+	}
+	if len(cached.Orders) != len(monthOrders) {
+		return true
+	}
+	have := make(map[string]bool, len(cached.Orders))
+	for _, o := range cached.Orders {
+		have[o.ID] = true
+	}
+	for _, o := range monthOrders {
+		if !have[o.ID] {
+			return true
+		}
+	}
+	return false
 }
 
 func fetchTokenTransfers(acc FinanceAccount, apiKey string) ([]TokenTransfer, error) {

@@ -95,7 +95,11 @@ func (p *moneriumProcessor) ProcessTransaction(ctx *ProcessorContext, tx *Transa
 		return nil
 	}
 
-	if info.Counterparty != "" && strings.HasPrefix(tx.Counterparty, "0x") {
+	// Adopt the Monerium counterpart name whenever the tx has no human-readable
+	// counterparty yet — either empty (a mint/redeem where the on-chain side is
+	// just the token contract) or a raw 0x address. Without the "empty" case a
+	// rent redeem stayed nameless, so no partner could be linked.
+	if info.Counterparty != "" && (tx.Counterparty == "" || strings.HasPrefix(tx.Counterparty, "0x")) {
 		tx.Counterparty = info.Counterparty
 	}
 	if tx.Metadata == nil {

@@ -13,7 +13,7 @@ import (
 )
 
 // OdooAnalyticPlansFile is the local cache produced by the
-// "analytic plans" stage of `chb odoo sync`. It records the plan and
+// "analytic plans" stage of `chb odoo pull`. It records the plan and
 // account ids the categorize command needs to set the right
 // analytic_distribution on each line — without these, categorize would
 // need to hit Odoo for every line.
@@ -127,7 +127,7 @@ func syncOdooAnalyticInfrastructure(creds *OdooCredentials, uid int, assumeYes, 
 	return file, nil
 }
 
-// OdooAnalyticPlansSync is the `chb odoo sync` step entry. Mirrors the
+// OdooAnalyticPlansSync is the `chb odoo pull` step entry. Mirrors the
 // shape of OdooPartnersSync so it slots into OdooSyncAll cleanly.
 func OdooAnalyticPlansSync(args []string) (int, error) {
 	if HasFlag(args, "--help", "-h", "help") {
@@ -488,7 +488,7 @@ func approveAnalyticAccountCreation(missing []analyticAccountSpec, existing []an
 		resp = strings.ToLower(strings.TrimSpace(resp))
 		return resp == "y" || resp == "yes"
 	default:
-		Warnf("%s⚠ %s  Not creating them in an unattended run — review the list (fix slug/name mismatches), then run: chb odoo sync --yes%s",
+		Warnf("%s⚠ %s  Not creating them in an unattended run — review the list (fix slug/name mismatches), then run: chb odoo pull --yes%s",
 			Fmt.Yellow, b.String(), Fmt.Reset)
 		return false
 	}
@@ -547,7 +547,7 @@ func saveOdooAnalyticPlansFile(file *OdooAnalyticPlansFile) error {
 // loadOdooAnalyticPlansFile reads the cache written by the analytic plans
 // sync. Callers (categorize) use the AccountID lookups to set
 // analytic_distribution on move lines. Returns nil when the cache is
-// missing — the caller is expected to suggest `chb odoo sync`.
+// missing — the caller is expected to suggest `chb odoo pull`.
 func loadOdooAnalyticPlansFile() *OdooAnalyticPlansFile {
 	data, err := os.ReadFile(odooAnalyticPlansCachePath())
 	if err != nil {

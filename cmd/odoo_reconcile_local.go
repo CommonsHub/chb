@@ -187,11 +187,25 @@ func bankLineMatchedToDocument(ln OdooCacheLine) bool {
 	return ln.IsReconciled && !reconcileCounterpartIsCategorized(ln.CounterpartType)
 }
 
-func computeReconcileMatches(journalID int, interactive bool) (*reconcileMatchSet, *odooPartnerIndex, error) {
+func computeReconcileMatches(journalID int, interactive bool, since time.Time) (*reconcileMatchSet, *odooPartnerIndex, error) {
 	Progress("loading journal-lines cache")
 	lines, ok := loadLatestOdooJournalLinesCache(journalID)
 	if !ok {
 		return nil, nil, fmt.Errorf("no local cache for journal #%d — run `chb odoo pull` first", journalID)
+	}
+	// --since windows the reconcile to recent lines: skip everything dated
+	// before the cutoff so a targeted "reconcile the last few days" pass
+	// doesn't re-scan (and re-touch) years of already-settled history.
+	if !since.IsZero() {
+		cutoff := since.Format("2006-01-02")
+		kept := lines[:0]
+		for _, ln := range lines {
+			if ln.Date != "" && ln.Date < cutoff {
+				continue
+			}
+			kept = append(kept, ln)
+		}
+		lines = kept
 	}
 	// Strategy 1 (ref-substring match) also looks at paid/in_payment
 	// candidates: the bank line's payment_ref carries the invoice
@@ -469,8 +483,8 @@ func printReconcileSummary(set *reconcileMatchSet) {
 
 // reconcileDryRunLocal is the --dry-run orchestrator: compute → print
 // full detail → footer.
-func reconcileDryRunLocal(journalID int, verbose, interactive bool) error {
-	set, _, err := computeReconcileMatches(journalID, interactive)
+func reconcileDryRunLocal(journalID int, verbose, interactive bool, since time.Time) error {
+	set, _, err := computeReconcileMatches(journalID, interactive, since)
 	if err != nil {
 		if err == errNoLocalCandidates {
 			fmt.Printf("  %sNo open invoices or bills in the local private cache.%s\n", Fmt.Yellow, Fmt.Reset)

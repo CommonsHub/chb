@@ -31,7 +31,7 @@ func categorizeOdooJournal(creds *OdooCredentials, uid int, journalID int, acc *
 
 	plans := loadOdooAnalyticPlansFile()
 	if plans == nil {
-		return fmt.Errorf("no analytic plans cache — run `chb odoo sync` first to create plans and accounts")
+		return fmt.Errorf("no analytic plans cache — run `chb odoo pull` first to create plans and accounts")
 	}
 
 	iban := kbcbrusselssource.NormalizeIBAN(acc.IBAN)

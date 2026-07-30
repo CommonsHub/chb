@@ -624,6 +624,15 @@ func OdooJournals(args []string) error {
 				}
 				since = t
 			}
+			// `fix --metadata` runs ONLY the metadata refresh stage
+			// (payment_ref + narration on existing lines), leaving the
+			// structural repairs alone. Delegates to the push metadata
+			// stage, which knows how to re-derive descriptions from the
+			// latest local cache (e.g. Monerium enrichment that landed
+			// after the original push, so "mint EURe" → the real memo).
+			if HasFlag(args, "--metadata") {
+				return odooJournalRefreshMetadata(creds, uid, journalID, since, HasFlag(args, "--dry-run"), HasFlag(args, "--yes", "-y"))
+			}
 			return odooJournalFix(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"), HasFlag(args, "--remap"), since)
 		}
 		if len(args) >= 2 && (args[1] == "fix-amounts" || args[1] == "repair-amounts") {
@@ -668,12 +677,21 @@ func OdooJournals(args []string) error {
 				reconcileArgs := append([]string{args[0]}, args[2:]...)
 				return OdooReconcileCommand(reconcileArgs)
 			}
+			var since time.Time
+			if v := GetOption(args, "--since"); v != "" {
+				t, ok := ParseSinceDate(v)
+				if !ok {
+					return fmt.Errorf("invalid --since %q (expected a date like 20260630 or 2026-06-30)", v)
+				}
+				since = t
+			}
 			return odooJournalReconcileInteractive(creds, uid, journalID,
 				HasFlag(args, "--yes", "-y"),
 				HasFlag(args, "--dry-run"),
 				HasFlag(args, "--verbose", "-v"),
 				HasFlag(args, "--interactive", "-i"),
 				true, // explicit reconcile: run the partner-linking pass
+				since,
 			)
 		}
 		if len(args) >= 2 && args[1] == "lines" {
@@ -1104,11 +1122,16 @@ changed mapping (e.g. 612011→612300) across already-assigned history.
 %sOPTIONS%s
   %s--since <date>%s         Only examine statement lines on/after this date
                           (e.g. 20260630) for the line-content fixes
+  %s--metadata%s             Run ONLY the metadata step: refresh payment_ref +
+                          narration on existing lines from the latest local
+                          cache (heals "mint EURe" once enrichment landed).
+                          Honours --since.
   %s--dry-run%s              Preview only; no writes to Odoo
   %s--remap%s                Also re-account already-assigned (chb-owned) lines
   %s-y%s, %s--yes%s             Skip the interactive confirmation
 `,
 			f.Bold, f.Reset, f.Cyan, f.Reset, f.Bold, f.Reset,
+			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
@@ -1152,6 +1175,7 @@ Stripe customer id (stored as the partner's bank account) are used instead.
 
 %sOPTIONS%s
   %s--from-journal <id|slug>%s  Source journal whose reconciled lines are moved
+  %s--since YYYYMMDD%s          Only reconcile lines on/after this date
   %s--dry-run%s                 Preview only; no writes to Odoo
   %s-v%s, %s--verbose%s            Also list skipped/no-match lines
   %s-y%s, %s--yes%s                Skip the interactive confirmation
@@ -1162,6 +1186,7 @@ Stripe customer id (stored as the partner's bank account) are used instead.
 			f.Cyan, f.Reset,
 			f.Cyan, f.Reset,
 			f.Bold, f.Reset,
+			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
 			f.Yellow, f.Reset, f.Yellow, f.Reset,
@@ -4772,7 +4797,7 @@ func setStatementBalanceStart(creds *OdooCredentials, uid int, stmtID int, value
 	return err
 }
 
-// OdooSyncAll is the meta-command behind `chb odoo sync`. It runs, in order:
+// OdooSyncAll is the meta-command behind `chb odoo pull`. It runs, in order:
 //   - chb odoo categories sync  (fetch analytic categories from Odoo)
 //   - chb odoo partners sync    (fetch partner snapshot from Odoo)
 //   - chb odoo invoices sync    (fetch outgoing invoices from Odoo)
@@ -4937,6 +4962,40 @@ func odooJournalPushWithReset(creds *OdooCredentials, uid int, journalID int, sy
 	return odooJournalSync(journalID, syncArgs)
 }
 
+// odooJournalRefreshMetadata runs only the metadata-refresh stage for the
+// account linked to journalID: it re-derives payment_ref + narration on the
+// journal's existing Odoo lines from the latest local cache. Used by
+// `chb odoo journals <id> fix --metadata` to heal lines pushed before the
+// enrichment landed (e.g. a Monerium mint showing "mint EURe" instead of the
+// real counterparty/memo). Delegates to the push metadata stage so there's a
+// single implementation of "diff local description → Odoo line". Rejects
+// odooSourceOfTruth journals (Odoo owns their descriptions) and journals with
+// no linked account.
+func odooJournalRefreshMetadata(creds *OdooCredentials, uid, journalID int, since time.Time, dryRun, assumeYes bool) error {
+	acc := linkedAccountForJournal(journalID)
+	if acc == nil {
+		return fmt.Errorf("journal #%d has no linked account; --metadata needs an account to re-derive descriptions from", journalID)
+	}
+	// Refresh the local journal-lines cache so the metadata stage sees every
+	// current Odoo line (and so the push's freshness guard passes). The stage
+	// only reads + rewrites descriptions on existing lines, so this is cheap
+	// and safe even when the journal has drifted from local on balance/count.
+	if _, err := writeOdooJournalLinesCache(creds, uid, journalID); err != nil {
+		return fmt.Errorf("refresh journal #%d cache: %v", journalID, err)
+	}
+	pushArgs := []string{"--metadata"}
+	if dryRun {
+		pushArgs = append(pushArgs, "--dry-run")
+	}
+	if assumeYes {
+		pushArgs = append(pushArgs, "--yes")
+	}
+	if !since.IsZero() {
+		pushArgs = append(pushArgs, "--since", since.Format("20060102"))
+	}
+	return AccountOdooPush(acc.Slug, pushArgs)
+}
+
 // odooJournalFullSync makes all three balances for a journal agree in one
 // command:
 //
@@ -5020,6 +5079,360 @@ func odooJournalFullSync(creds *OdooCredentials, uid int, journalID int, syncArg
 		fmt.Printf("  %s✓ Statement chain checked%s\n", Fmt.Dim, Fmt.Reset)
 	}
 	return nil
+}
+
+// odooSyncJournalResult captures the per-journal outcome of `chb odoo sync`.
+type odooSyncJournalResult struct {
+	JournalID     int
+	Slug          string
+	SourceOfTruth bool
+	Pulled        int // new source txs that landed in the local mirror
+	Pushed        int // new lines created in the Odoo journal
+	Reconciled    int // lines auto-reconciled to invoices/bills
+	Categorized   int // suspense lines moved onto their rule-mapped GL account
+	Err           error
+}
+
+// OdooFullSync is `chb odoo sync`: bring every linked Odoo journal up to date
+// with reality in one command. For each non-archived linked journal it
+//
+//  1. pulls the account's source → local (Stripe payouts, on-chain transfers),
+//     fetching Monerium order metadata and re-generating the local view so any
+//     new line carries a real description — skipped entirely with --local,
+//  2. pushes the new local transactions into the Odoo journal, and
+//  3. auto-reconciles them against open invoices/bills.
+//
+// odooSourceOfTruth journals (e.g. KBC) are pull + reconcile only — Odoo owns
+// their lines, so CHB never pushes into them. Prints one summary row per
+// journal plus a closing tally. --dry-run previews without writing to Odoo;
+// --local skips the remote fetch and works purely from local files.
+func OdooFullSync(args []string) error {
+	if HasFlag(args, "--help", "-h", "help") {
+		printOdooFullSyncHelp()
+		return nil
+	}
+	dryRun := HasFlag(args, "--dry-run")
+	if !dryRun {
+		if err := RequireOdooWriteCapability(); err != nil {
+			return err
+		}
+	}
+	local := HasFlag(args, "--local")
+	assumeYes := HasFlag(args, "--yes", "-y")
+
+	var since time.Time
+	if v := GetOption(args, "--since"); v != "" {
+		t, ok := ParseSinceDate(v)
+		if !ok {
+			return fmt.Errorf("invalid --since %q (expected a date like 20260630 or 2026-06-30)", v)
+		}
+		since = t
+	}
+
+	creds, err := ResolveOdooCredentials()
+	if err != nil {
+		return err
+	}
+	uid, err := odooAuth(creds.URL, creds.DB, creds.Login, creds.Password)
+	if err != nil || uid == 0 {
+		return wrapOdooAuthError(err)
+	}
+
+	configs := LoadAccountConfigs()
+	var targets []AccountConfig
+	for _, acc := range configs {
+		if acc.OdooJournalID > 0 && !acc.IsArchived() {
+			targets = append(targets, acc)
+		}
+	}
+	if len(targets) == 0 {
+		fmt.Printf("\n  %sNo accounts are linked to an Odoo journal.%s\n\n", Fmt.Dim, Fmt.Reset)
+		return nil
+	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i].OdooJournalID < targets[j].OdooJournalID })
+
+	mode := "pull → push → reconcile"
+	if local {
+		mode = "local only (no remote fetch) → push → reconcile"
+	}
+	if dryRun {
+		mode += " · dry-run (no writes to Odoo)"
+	}
+	fmt.Printf("\n%s🔄 Syncing %s Odoo journals%s  %s%s (db: %s)%s\n",
+		Fmt.Bold, Pluralize(len(targets), "linked", ""), Fmt.Reset, Fmt.Dim, creds.URL, creds.DB, Fmt.Reset)
+	fmt.Printf("  %s%s%s\n", Fmt.Dim, mode, Fmt.Reset)
+
+	pushAttentionHints = nil
+	defer func() { pushAttentionHints = nil }()
+
+	// Refresh the Odoo-side documents the reconcile step matches against
+	// (invoices, bills, partners, analytic plans). Without a current cache,
+	// reconcile finds no candidates and every new line stays on suspense —
+	// so "reconcile as much as possible" needs this first. Read-only on Odoo;
+	// skipped with --local. Soft-fail: a stale cache still lets the push run.
+	if !local {
+		fmt.Printf("\n%s▶ Pulling Odoo invoices / bills / partners…%s\n", Fmt.Bold, Fmt.Reset)
+		if err := OdooSyncAll(nil); err != nil {
+			Warnf("  %s⚠ Odoo pull failed: %v — reconcile may find fewer matches%s", Fmt.Yellow, err, Fmt.Reset)
+		}
+		// Auto-heal a sparse cache: the incremental invoice/bill pull only
+		// fetches documents changed since its watermark, so a namespace whose
+		// cache was bootstrapped recently can sit with ~zero OPEN candidates
+		// while Odoo holds plenty (that's how an unpaid 1,255.20 invoice
+		// stayed invisible to the matcher). Trigger the one-time full pull
+		// when there are no open candidates OR the whole cache is tiny — a
+		// real organisation always has more than a handful of posted
+		// documents, so <10 total means the namespace never saw a full pull
+		// (prod sat at 3 cached invoices while Odoo held 577).
+		if open, all, err := loadLocalCandidatePartitions(); err == nil && (len(open) == 0 || len(all) < 10) {
+			fmt.Printf("  %s↻ no open invoices/bills in the local cache — re-pulling full history…%s\n", Fmt.Dim, Fmt.Reset)
+			if _, err := InvoicesSync([]string{"--history"}); err != nil {
+				Warnf("  %s⚠ full invoices pull: %v%s", Fmt.Yellow, err, Fmt.Reset)
+			}
+			if _, err := BillsSync([]string{"--history"}); err != nil {
+				Warnf("  %s⚠ full bills pull: %v%s", Fmt.Yellow, err, Fmt.Reset)
+			}
+		}
+	}
+
+	results := make([]odooSyncJournalResult, 0, len(targets))
+	for _, acc := range targets {
+		acc := acc
+		jname := OdooJournalName(acc.OdooJournalID)
+		if jname == "" {
+			jname = acc.Name
+		}
+		fmt.Printf("\n%s▶ #%d %s%s %s(%s)%s\n", Fmt.Bold, acc.OdooJournalID, acc.Slug, Fmt.Reset, Fmt.Dim, jname, Fmt.Reset)
+		res := odooSyncOneJournal(creds, uid, acc, local, dryRun, assumeYes, since)
+		if res.Err != nil {
+			fmt.Printf("  %s✗ %v%s\n", Fmt.Red, res.Err, Fmt.Reset)
+		} else {
+			fmt.Printf("  %s✓ %s%s\n", Fmt.Green, odooSyncRowSummary(res), Fmt.Reset)
+		}
+		results = append(results, res)
+	}
+
+	printOdooFullSyncTally(results)
+
+	if len(pushAttentionHints) > 0 {
+		fmt.Printf("\n  %s⚠ %d journal%s need%s attention:%s\n",
+			Fmt.Yellow, len(pushAttentionHints), plural(len(pushAttentionHints)), attentionVerb(len(pushAttentionHints)), Fmt.Reset)
+		for _, h := range pushAttentionHints {
+			fmt.Printf("    %s#%d %s — %s%s\n", Fmt.Dim, h.JournalID, h.Slug, h.Message, Fmt.Reset)
+			if h.Suggested != "" {
+				fmt.Printf("      %s$ %s%s\n", Fmt.Cyan, h.Suggested, Fmt.Reset)
+			}
+		}
+	}
+
+	failed := 0
+	for _, r := range results {
+		if r.Err != nil {
+			failed++
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%s failed", Pluralize(failed, "journal", ""))
+	}
+	return nil
+}
+
+// odooSyncOneJournal runs the pull → push → reconcile pipeline for a single
+// linked journal and returns the counts. It leans on the existing account
+// verbs (AccountFetch for the pull, AccountOdooPush for the push+reconcile) so
+// there's one implementation of each step; the created/reconciled counts come
+// back through the lastPushCreatedCount / lastReconcileApplied package vars.
+func odooSyncOneJournal(creds *OdooCredentials, uid int, acc AccountConfig, local, dryRun, assumeYes bool, since time.Time) odooSyncJournalResult {
+	res := odooSyncJournalResult{JournalID: acc.OdooJournalID, Slug: acc.Slug, SourceOfTruth: acc.IsOdooSourceOfTruth()}
+
+	localBefore := accountLocalOdooSyncSnapshot(&acc).TxCount
+
+	// 1. Pull the source → local (also fetches Monerium order metadata and
+	//    re-generates the touched months, so new lines carry a real memo).
+	//    --local skips this and works from whatever is already on disk.
+	if !local {
+		if err := AccountFetch(acc.Slug, nil); err != nil {
+			res.Err = fmt.Errorf("pull: %w", err)
+			return res
+		}
+		if n := accountLocalOdooSyncSnapshot(&acc).TxCount - localBefore; n > 0 {
+			res.Pulled = n
+		}
+	}
+
+	// 2. Refresh the local journal-lines cache so the push freshness guard and
+	//    the reconcile matcher both plan against Odoo's current state.
+	if err := refreshOdooJournalCacheIfStale(creds, uid, acc.OdooJournalID); err != nil {
+		res.Err = fmt.Errorf("refresh journal cache: %w", err)
+		return res
+	}
+
+	// 3. odooSourceOfTruth (KBC): Odoo owns the lines — reconcile only.
+	if res.SourceOfTruth {
+		if !dryRun {
+			lastReconcileApplied = 0
+			if err := odooJournalReconcile(creds, uid, acc.OdooJournalID, true, false, false); err != nil {
+				res.Err = fmt.Errorf("reconcile: %w", err)
+				return res
+			}
+			res.Reconciled = lastReconcileApplied
+		}
+		res.Categorized = syncCategorizeSuspenseLines(creds, uid, acc, since, dryRun)
+		return res
+	}
+
+	// 4. Push the new local txs into Odoo, then auto-reconcile them (the push
+	//    reconciles small batches itself; large back-fills queue an attention
+	//    hint pointing at the dedicated reconcile verb).
+	pushArgs := []string{}
+	if dryRun {
+		pushArgs = append(pushArgs, "--dry-run")
+	}
+	if assumeYes {
+		pushArgs = append(pushArgs, "--yes")
+	}
+	if !since.IsZero() {
+		pushArgs = append(pushArgs, "--since", since.Format("20060102"))
+	}
+	lastPushCreatedCount = 0
+	lastReconcileApplied = 0
+	if err := AccountOdooPush(acc.Slug, pushArgs); err != nil {
+		res.Err = fmt.Errorf("push: %w", err)
+		return res
+	}
+	res.Pushed = lastPushCreatedCount
+	res.Reconciled = lastReconcileApplied
+
+	// 5. The other half of "reconcile" per the operator's definition: any line
+	//    that found no invoice/bill match but whose local category resolves to a
+	//    GL account is moved off suspense onto that account. remap=false keeps it
+	//    suspense-only, so a real account or an invoice match is never touched.
+	res.Categorized = syncCategorizeSuspenseLines(creds, uid, acc, since, dryRun)
+	return res
+}
+
+// syncCategorizeSuspenseLines moves lines still on the suspense account onto the
+// GL account their local category maps to (the "apply the rules if no invoice
+// match" step). Suspense-only (remap=false), so it never reverts a real account
+// or an invoice reconciliation. Returns how many lines were re-accounted (or, in
+// dry-run, how many would be).
+func syncCategorizeSuspenseLines(creds *OdooCredentials, uid int, acc AccountConfig, since time.Time, dryRun bool) int {
+	fixes, err := detectOdooJournalAccountReclassification(creds, uid, acc.OdooJournalID, &acc, false, since)
+	if err != nil {
+		Warnf("  %s⚠ categorize suspense lines: %v%s", Fmt.Yellow, err, Fmt.Reset)
+		return 0
+	}
+	if len(fixes) == 0 {
+		return 0
+	}
+	if dryRun {
+		return len(fixes)
+	}
+	status := newStatusLine()
+	done := applyOdooJournalAccountReclassification(creds, uid, fixes, status)
+	status.Clear()
+	return done
+}
+
+// odooSyncRowSummary renders the one-line per-journal outcome.
+func odooSyncRowSummary(res odooSyncJournalResult) string {
+	var parts []string
+	if res.Pulled > 0 {
+		parts = append(parts, fmt.Sprintf("%d new tx%s pulled", res.Pulled, plural(res.Pulled)))
+	}
+	if res.SourceOfTruth {
+		parts = append(parts, "odoo source-of-truth (no push)")
+	} else if res.Pushed > 0 {
+		parts = append(parts, fmt.Sprintf("%s pushed", Pluralize(res.Pushed, "tx", "")))
+	}
+	if res.Reconciled > 0 {
+		parts = append(parts, fmt.Sprintf("%s reconciled", Pluralize(res.Reconciled, "line", "")))
+	}
+	if res.Categorized > 0 {
+		parts = append(parts, fmt.Sprintf("%s categorised", Pluralize(res.Categorized, "line", "")))
+	}
+	if len(parts) == 0 {
+		return "already up to date"
+	}
+	return strings.Join(parts, " · ")
+}
+
+// printOdooFullSyncTally prints the closing one-line summary across all journals.
+func printOdooFullSyncTally(results []odooSyncJournalResult) {
+	journals, pushed, reconciled, categorized, upToDate, failed := 0, 0, 0, 0, 0, 0
+	for _, r := range results {
+		journals++
+		pushed += r.Pushed
+		reconciled += r.Reconciled
+		categorized += r.Categorized
+		if r.Err != nil {
+			failed++
+			continue
+		}
+		if r.Pushed == 0 && r.Reconciled == 0 && r.Categorized == 0 && r.Pulled == 0 {
+			upToDate++
+		}
+	}
+	fmt.Printf("\n%s%d journals%s — %s pushed, %s reconciled, %s categorised",
+		Fmt.Bold, journals, Fmt.Reset,
+		Pluralize(pushed, "tx", ""), Pluralize(reconciled, "line", ""), Pluralize(categorized, "line", ""))
+	if upToDate > 0 {
+		fmt.Printf(", %d already up to date", upToDate)
+	}
+	if failed > 0 {
+		fmt.Printf(", %s%d failed%s", Fmt.Red, failed, Fmt.Reset)
+	}
+	fmt.Printf("\n\n")
+}
+
+// printOdooFullSyncHelp documents `chb odoo sync`.
+func printOdooFullSyncHelp() {
+	f := Fmt
+	fmt.Printf(`
+%schb odoo sync%s — Bring every linked Odoo journal up to date with reality.
+
+For each non-archived account linked to an Odoo journal, in journal order:
+  1. %spull%s the account's source → local (Stripe payouts, on-chain transfers),
+     fetching Monerium order metadata and re-generating the local view so new
+     lines carry a real description,
+  2. %spush%s the new local transactions into the Odoo journal, and
+  3. %sreconcile%s them against open invoices/bills.
+
+odooSourceOfTruth journals (e.g. KBC) are pull + reconcile only — Odoo owns
+their lines, so CHB never pushes into them.
+
+%sUSAGE%s
+  %schb odoo sync%s                Full loop against the configured Odoo DB
+  %schb odoo sync --local%s        Skip the remote fetch; work from local files
+  %schb odoo sync --dry-run%s      Preview; no writes to Odoo
+
+%sOPTIONS%s
+  %s--local%s                 Skip fetching from remote sources (local files only)
+  %s--since YYYYMMDD%s         Window the push + reconcile to this date on
+  %s--dry-run%s               Preview only; no writes to Odoo
+  %s-y%s, %s--yes%s              Skip confirmation prompts
+
+%sSEE ALSO%s
+  %schb odoo pull%s     Fetch Odoo-side data (invoices/bills/partners) only
+  %schb odoo push%s     Push local → journals only (no source pull)
+`,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Bold, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset, f.Yellow, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+	)
 }
 
 // odooJournalsSyncAll pushes every linked account's local transactions into
@@ -5367,6 +5780,8 @@ func PrintOdooHelp() {
 	f := Fmt
 	fmt.Printf("\n%schb odoo%s — Odoo integration (Odoo is a target: pull + push + pending)\n\n", f.Bold, f.Reset)
 	fmt.Printf("%sCOMMANDS%s\n\n", f.Bold, f.Reset)
+	fmt.Printf("  %s%schb odoo sync%s\n", f.Bold, f.Cyan, f.Reset)
+	fmt.Printf("    %sFull loop per linked journal: pull source → local, push new txs, reconcile (--local skips the fetch)%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo pull%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sFetch Odoo data into local provider archives (categories, partners, invoices, bills, journal lines)%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo push%s\n", f.Bold, f.Cyan, f.Reset)

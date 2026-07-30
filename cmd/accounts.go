@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -3066,6 +3067,12 @@ func odooSyncStageFlagsExplicit(args []string) bool {
 		HasFlag(args, "--metadata")
 }
 
+// lastPushCreatedCount holds the number of Odoo journal lines the most recent
+// AccountOdooPush created. Read by the `chb odoo sync` aggregate driver to
+// report "y new txs" per journal. Single-threaded CLI, so a package var is
+// enough (mirrors lastReconcileApplied).
+var lastPushCreatedCount int
+
 func AccountOdooPush(slug string, args []string) error {
 	if HasFlag(args, "--help", "-h", "help") {
 		printAccountSlugHelp(slug)
@@ -3417,6 +3424,12 @@ func AccountOdooPush(slug string, args []string) error {
 			}
 		}
 	}
+
+	// Expose how many lines this push created so aggregate drivers (the
+	// `chb odoo sync` orchestrator) can report a per-journal "y new txs"
+	// without parsing the summary string. Single-threaded CLI, so a package
+	// var mirrors lastReconcileApplied.
+	lastPushCreatedCount = syncedCount
 
 	// Mapping resolution happens at generate time (see applyOdooMapping
 	// in odoo_mapping.go and the generate.go step that calls it). The
@@ -4998,29 +5011,61 @@ func normalizeNarration(s string) string {
 // optional narration diff. Promoted out of the function body so the
 // preview helper (planChangedFields) can take it as a parameter.
 type metadataUpdatePlan struct {
-	LineID     int
-	MoveID     int
-	ImportID   string
-	Old        string
-	New        string
-	NarrChange bool
-	NarrOld    string
-	NarrNew    string
+	LineID       int
+	MoveID       int
+	ImportID     string
+	Old          string
+	New          string
+	NarrChange   bool
+	NarrOld      string
+	NarrNew      string
+	PartnerID    int    // resolved partner to set (0 = leave as-is)
+	PartnerName  string // for the preview
+	IsReconciled bool   // needs unreconcile → draft → write → post
+	// RestoreAccountID/Code hold the counterpart GL account a categorised line
+	// sat on before we drafted its move. Drafting + reposting a bank line
+	// re-derives its counterpart to the journal suspense account, so we
+	// re-apply the original account afterwards to avoid silently un-categorising
+	// the line while only its label was meant to change.
+	RestoreAccountID   int
+	RestoreAccountCode string
 }
 
 // planChangedFields returns a compact label like "payment_ref" /
 // "narration" / "payment_ref + narration" for the preview row tag.
-func planChangedFields(p metadataUpdatePlan) string {
-	refChange := p.New != p.Old
-	switch {
-	case refChange && p.NarrChange:
-		return "payment_ref + narration"
-	case refChange:
-		return "payment_ref"
-	case p.NarrChange:
-		return "narration"
+// uniquePositivePlanAccountIDs collects the distinct RestoreAccountID values
+// across a metadata plan, for a single batched code lookup.
+func uniquePositivePlanAccountIDs(plan []metadataUpdatePlan) []int {
+	seen := map[int]bool{}
+	var out []int
+	for _, p := range plan {
+		if p.RestoreAccountID > 0 && !seen[p.RestoreAccountID] {
+			seen[p.RestoreAccountID] = true
+			out = append(out, p.RestoreAccountID)
+		}
 	}
-	return "no-op"
+	return out
+}
+
+func planChangedFields(p metadataUpdatePlan) string {
+	var fields []string
+	if p.New != p.Old {
+		fields = append(fields, "payment_ref")
+	}
+	if p.NarrChange {
+		fields = append(fields, "narration")
+	}
+	if p.PartnerID > 0 {
+		fields = append(fields, "partner")
+	}
+	if len(fields) == 0 {
+		return "no-op"
+	}
+	label := strings.Join(fields, " + ")
+	if p.IsReconciled {
+		label += " (reconciled)"
+	}
+	return label
 }
 
 func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *AccountConfig, since, until time.Time, dryRun, assumeYes bool) (reviewed, updated int, err error) {
@@ -5043,7 +5088,7 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 	// for). move_id is the move we'd draft-write-post on.
 	lines, err := odooSearchReadAllMaps(creds, uid, "account.bank.statement.line",
 		[]interface{}{[]interface{}{"journal_id", "=", acc.OdooJournalID}},
-		[]string{"id", "move_id", "date", "payment_ref", "unique_import_id", "narration", "is_reconciled"},
+		[]string{"id", "move_id", "date", "payment_ref", "unique_import_id", "narration", "is_reconciled", "partner_id"},
 		"date asc, id asc")
 	if err != nil {
 		return 0, 0, fmt.Errorf("fetch journal lines: %v", err)
@@ -5083,42 +5128,86 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 		// before comparing so the wrapper alone doesn't classify a
 		// line as stale — that produced hundreds of false positives.
 		narrChange := wantNarr != "" && normalizeNarration(wantNarr) != normalizeNarration(curNarr)
-		if !refChange && !narrChange {
+
+		// Partner: only fill a line that has none — never override a partner an
+		// operator (or an invoice reconciliation) already set. Resolve/create
+		// from the tx's counterpart (Monerium IBAN + name, or on-chain address).
+		wantPartnerID, wantPartnerName := 0, ""
+		if odooFieldID(row["partner_id"]) == 0 {
+			if pid := resolveOrCreateOdooPartnerForBlockchainTx(creds, uid, tx); pid > 0 {
+				wantPartnerID = pid
+				wantPartnerName = strings.TrimSpace(tx.Counterparty)
+			}
+		}
+		partnerChange := wantPartnerID > 0
+
+		if !refChange && !narrChange && !partnerChange {
 			continue
 		}
-		// Already-reconciled lines: skip. Their payment_ref is no longer
-		// load-bearing (the matcher filters reconciled lines out anyway),
-		// and writing to them on a posted+reconciled move triggers
-		// "vous ne pouvez pas supprimer une écriture comptable validée".
-		// Operator should unreconcile first if they really want to retag.
-		if odooBool(row["is_reconciled"]) {
-			skippedReconciled++
-			continue
+
+		reconciled := odooBool(row["is_reconciled"])
+		restoreAccountID := 0
+		if reconciled {
+			// A line reconciled against an invoice/bill (receivable/payable
+			// counterpart) is left alone: unreconciling it to relabel would
+			// break a real payment link, and its payment_ref/partner are
+			// already meaningful. Categorised-only lines (e.g. a rent redeem on
+			// 610100) have no reconcilable counterpart, so they're safe to
+			// unreconcile → draft → write → repost — capturing the counterpart
+			// account so we can restore the categorisation afterwards.
+			if moveID := odooFieldID(row["move_id"]); moveID > 0 {
+				if cp, cerr := fetchCounterpartMoveLinesByMoveID(creds, uid, []int{moveID}); cerr == nil {
+					if stripeCounterpartIsInvoiceMatched(cp[moveID]) {
+						skippedReconciled++
+						continue
+					}
+					restoreAccountID = cp[moveID].AccountID
+				}
+			}
 		}
 		plan = append(plan, metadataUpdatePlan{
-			LineID:     odooInt(row["id"]),
-			MoveID:     odooFieldID(row["move_id"]),
-			ImportID:   importID,
-			Old:        curRef,
-			New:        wantRef,
-			NarrChange: narrChange,
-			NarrOld:    curNarr,
-			NarrNew:    wantNarr,
+			LineID:           odooInt(row["id"]),
+			MoveID:           odooFieldID(row["move_id"]),
+			ImportID:         importID,
+			Old:              curRef,
+			New:              wantRef,
+			NarrChange:       narrChange,
+			NarrOld:          curNarr,
+			NarrNew:          wantNarr,
+			PartnerID:        wantPartnerID,
+			PartnerName:      wantPartnerName,
+			IsReconciled:     reconciled,
+			RestoreAccountID: restoreAccountID,
 		})
+	}
+
+	// Resolve the codes for the counterpart accounts we need to restore after
+	// the draft → repost cycle (one batched lookup for the whole plan).
+	if restoreIDs := uniquePositivePlanAccountIDs(plan); len(restoreIDs) > 0 {
+		if codeByID, cerr := fetchAccountCodesByID(creds, uid, restoreIDs); cerr == nil {
+			for i := range plan {
+				if code := codeByID[plan[i].RestoreAccountID]; code != "" {
+					plan[i].RestoreAccountCode = code
+				}
+			}
+		}
 	}
 
 	// Bucket the plan by which attribute(s) actually change so the
 	// preview header tells the operator exactly what's about to move.
-	refOnly, narrOnly, both := 0, 0, 0
+	refCount, narrCount, partnerCount, reconciledCount := 0, 0, 0, 0
 	for _, p := range plan {
-		refChange := p.New != p.Old
-		switch {
-		case refChange && p.NarrChange:
-			both++
-		case refChange:
-			refOnly++
-		case p.NarrChange:
-			narrOnly++
+		if p.New != p.Old {
+			refCount++
+		}
+		if p.NarrChange {
+			narrCount++
+		}
+		if p.PartnerID > 0 {
+			partnerCount++
+		}
+		if p.IsReconciled {
+			reconciledCount++
 		}
 	}
 
@@ -5139,13 +5228,17 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 	fmt.Printf("\n  %s↻ Metadata refresh — %d reviewed, %d stale%s%s\n",
 		Fmt.Bold, reviewed, len(plan), skipHint, Fmt.Reset)
 	fmt.Printf("  %sWill update on each stale line (draft → write → repost):%s\n", Fmt.Dim, Fmt.Reset)
-	if refOnly+both > 0 {
-		fmt.Printf("    %s• payment_ref%s on %d line%s\n",
-			Fmt.Yellow, Fmt.Reset, refOnly+both, plural(refOnly+both))
+	if refCount > 0 {
+		fmt.Printf("    %s• payment_ref%s on %d line%s\n", Fmt.Yellow, Fmt.Reset, refCount, plural(refCount))
 	}
-	if narrOnly+both > 0 {
-		fmt.Printf("    %s• narration%s on %d line%s\n",
-			Fmt.Yellow, Fmt.Reset, narrOnly+both, plural(narrOnly+both))
+	if narrCount > 0 {
+		fmt.Printf("    %s• narration%s on %d line%s\n", Fmt.Yellow, Fmt.Reset, narrCount, plural(narrCount))
+	}
+	if partnerCount > 0 {
+		fmt.Printf("    %s• partner%s on %d line%s (linked/created from Monerium counterpart)\n", Fmt.Yellow, Fmt.Reset, partnerCount, plural(partnerCount))
+	}
+	if reconciledCount > 0 {
+		fmt.Printf("    %s%d of them are reconciled%s — unreconciled first, then re-posted\n", Fmt.Dim, reconciledCount, Fmt.Reset)
 	}
 	fmt.Println()
 
@@ -5173,6 +5266,10 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 				Fmt.Dim, Fmt.Reset,
 				Fmt.Yellow, truncate(p.NarrOld, 50), Fmt.Reset,
 				Fmt.Green, truncate(p.NarrNew, 50), Fmt.Reset)
+		}
+		if p.PartnerID > 0 {
+			fmt.Printf("      %spartner:%s     %s→ %s%s (#%d)%s\n",
+				Fmt.Dim, Fmt.Reset, Fmt.Green, truncate(p.PartnerName, 40), "", p.PartnerID, Fmt.Reset)
 		}
 	}
 	if len(plan) > previewLimit {
@@ -5248,6 +5345,18 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 			failed++
 			continue
 		}
+		// A reconciled line can't be drafted/rewritten while its counterpart is
+		// still reconciled — break it first (benign for a categorised-only line
+		// with no reconcilable move lines, which is the case we let through the
+		// invoice-match guard above). Counterpart account is unchanged by the
+		// draft → write → repost, so the categorisation survives.
+		if p.IsReconciled {
+			if uerr := unreconcileStatementLineMove(creds, uid, odooStatementLineForReconcile{MoveID: p.MoveID}); uerr != nil && !errors.Is(uerr, errNoReconciledMoveLines) {
+				Warnf("    %s⚠ line #%d unreconcile: %v%s", Fmt.Yellow, p.LineID, uerr, Fmt.Reset)
+				failed++
+				continue
+			}
+		}
 		state := moveStates[p.MoveID]
 		switch state {
 		case "draft":
@@ -5277,14 +5386,24 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 				continue
 			}
 		}
-		patch := map[string]interface{}{"payment_ref": p.New}
+		patch := map[string]interface{}{}
+		if p.New != p.Old {
+			patch["payment_ref"] = p.New
+		}
 		if p.NarrChange {
 			patch["narration"] = p.NarrNew
 		}
+		if p.PartnerID > 0 {
+			patch["partner_id"] = p.PartnerID
+		}
 		writeErr := func() error {
+			if len(patch) == 0 {
+				return nil
+			}
 			_, e := odooExec(creds.URL, creds.DB, uid, creds.Password,
 				"account.bank.statement.line", "write",
-				[]interface{}{[]interface{}{p.LineID}, patch}, nil)
+				[]interface{}{[]interface{}{p.LineID}, patch},
+				map[string]interface{}{"context": map[string]interface{}{"check_move_validity": false}})
 			return e
 		}()
 		// Re-post only when we left the move posted to begin with —
@@ -5304,6 +5423,15 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 			Warnf("    %s⚠ line #%d write: %v%s", Fmt.Yellow, p.LineID, writeErr, Fmt.Reset)
 			failed++
 			continue
+		}
+		// Restore the categorisation the draft → repost reset to suspense, so a
+		// relabel never silently un-categorises a line. Skipped when there's
+		// nothing to restore (line was already on suspense) or the account is
+		// itself the suspense account.
+		if p.RestoreAccountCode != "" && !isSuspenseAccountCode(p.RestoreAccountCode) {
+			if aerr := applyOdooMappingAccount(creds, uid, []int{p.LineID}, p.RestoreAccountCode, status); aerr != nil {
+				Warnf("    %s⚠ line #%d restore account %s: %v%s", Fmt.Yellow, p.LineID, p.RestoreAccountCode, aerr, Fmt.Reset)
+			}
 		}
 		updated++
 	}
@@ -6983,7 +7111,18 @@ func buildUniqueImportID(acc *AccountConfig, tx TransactionEntry) string {
 	if address == "" {
 		address = acc.Slug
 	}
+	// The import id embeds the raw 0x transaction hash. Prefer TxHash, then
+	// ProviderID (the canonical clean hash on the public JSON) — only fall back
+	// to tx.ID last, because ID is the NIP-73 URI ("ethereum:100:tx:0x…") whose
+	// prefix would corrupt the id. TxHash is internal + omitempty, so it's often
+	// absent after a tx is reloaded from transactions.json; without the
+	// ProviderID step those lines built a malformed id ("gnosis:…:ethereum:100:
+	// tx:0x…") that never matched the clean id Odoo was pushed with — so
+	// metadata/categorize/reconcile silently skipped them.
 	txHash := tx.TxHash
+	if txHash == "" {
+		txHash = tx.ProviderID
+	}
 	if txHash == "" {
 		txHash = tx.ID
 	}

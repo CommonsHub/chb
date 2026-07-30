@@ -298,14 +298,18 @@ func main() {
 			subcmd = args[1]
 		}
 		switch subcmd {
-		case "pull", "sync":
-			if subcmd == "sync" {
-				cmd.Warnf("%s'chb odoo sync' is deprecated — use 'chb odoo pull' instead%s", cmd.Fmt.Dim, cmd.Fmt.Reset)
-			}
+		case "pull":
 			// Fetch-only: invoices + bills + partners + analytic plans
 			// + categories. Pushing to journals lives under
 			// `chb odoo journals push` (see below).
 			if err := cmd.OdooSyncAll(args[2:]); err != nil {
+				exitWithError(err)
+			}
+		case "sync":
+			// Full loop: for every linked journal, pull its source →
+			// local (+ metadata + generate), push new txs into the
+			// journal, and reconcile. --local skips the remote fetch.
+			if err := cmd.OdooFullSync(args[2:]); err != nil {
 				exitWithError(err)
 			}
 		case "push":
@@ -489,6 +493,12 @@ func main() {
 			}
 		} else {
 			exitWithUsage("%sUsage: chb wise sync [slug] [--apply]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
+		}
+	case "serve":
+		// Read-only web UI to review transactions across Odoo journals
+		// (mobile-friendly; expose via Tailscale).
+		if err := cmd.OdooWebServe(args[1:]); err != nil {
+			exitWithError(err)
 		}
 	case "search":
 		if err := cmd.Search(args[1:]); err != nil {
