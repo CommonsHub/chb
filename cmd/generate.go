@@ -891,6 +891,19 @@ func Generate(args []string) error {
 		return ""
 	})
 
+	genStep("Door access", func() string {
+		written := 0
+		for _, scope := range scopes {
+			if generateMonthDoorGo(dataDir, scope.Year, scope.Month, settings) {
+				written++
+			}
+		}
+		if written == 0 {
+			return ""
+		}
+		return Pluralize(written, "month", "")
+	})
+
 	genStep("Inbound-spread indexes", func() string {
 		if err := rebuildInboundSpreads(dataDir); err != nil {
 			return "error: " + err.Error()
@@ -3713,6 +3726,7 @@ They are derived from raw synced data and can be regenerated at any time.
 | contributors.json | Monthly contributor stats (tokens, messages) |
 | counterparties.json | Unique counterparties from transactions |
 | members.json | Membership snapshot (Stripe + Odoo) |
+| door.json | Door openings per member (distinct days, from the #door Discord channel) |
 | images.json | Images extracted from Discord messages |
 `
 	readmePath := filepath.Join(dataDir, "latest", "generated", "README.md")
