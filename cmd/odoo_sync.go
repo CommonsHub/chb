@@ -5088,6 +5088,7 @@ type odooSyncJournalResult struct {
 	SourceOfTruth bool
 	Pulled        int // new source txs that landed in the local mirror
 	Pushed        int // new lines created in the Odoo journal
+	Held          int // EURe mint/burn txs withheld until Monerium metadata lands
 	Reconciled    int // lines auto-reconciled to invoices/bills
 	Categorized   int // suspense lines moved onto their rule-mapped GL account
 	Err           error
@@ -5295,12 +5296,14 @@ func odooSyncOneJournal(creds *OdooCredentials, uid int, acc AccountConfig, loca
 		pushArgs = append(pushArgs, "--since", since.Format("20060102"))
 	}
 	lastPushCreatedCount = 0
+	lastPushHeldCount = 0
 	lastReconcileApplied = 0
 	if err := AccountOdooPush(acc.Slug, pushArgs); err != nil {
 		res.Err = fmt.Errorf("push: %w", err)
 		return res
 	}
 	res.Pushed = lastPushCreatedCount
+	res.Held = lastPushHeldCount
 	res.Reconciled = lastReconcileApplied
 
 	// 5. The other half of "reconcile" per the operator's definition: any line
@@ -5344,6 +5347,9 @@ func odooSyncRowSummary(res odooSyncJournalResult) string {
 		parts = append(parts, "odoo source-of-truth (no push)")
 	} else if res.Pushed > 0 {
 		parts = append(parts, fmt.Sprintf("%s pushed", Pluralize(res.Pushed, "tx", "")))
+	}
+	if res.Held > 0 {
+		parts = append(parts, fmt.Sprintf("%s⚠ %s held (awaiting Monerium metadata)%s", Fmt.Yellow, Pluralize(res.Held, "tx", ""), Fmt.Reset))
 	}
 	if res.Reconciled > 0 {
 		parts = append(parts, fmt.Sprintf("%s reconciled", Pluralize(res.Reconciled, "line", "")))

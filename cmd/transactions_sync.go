@@ -657,8 +657,13 @@ func TransactionsSync(args []string) (int, error) {
 	}
 
 	// --- Monerium sync ---
-	// Also auto-include EURe etherscan accounts (Monerium mints/redeems happen on-chain)
-	if sourceFilter == "" || sourceFilter == "monerium" || sourceFilter == "gnosis" {
+	// Also auto-include EURe etherscan accounts (Monerium mints/redeems happen
+	// on-chain). EURe lives on several chains, so every chain filter that can
+	// name an EURe account must pass through here — "polygon" used to be
+	// missing, which meant a polygon-account pull never refreshed its orders.
+	if sourceFilter == "" || sourceFilter == "monerium" || sourceFilter == "gnosis" ||
+		sourceFilter == "polygon" || sourceFilter == "ethereum" {
+		lastMoneriumSyncIssue = ""
 		moneriumAccounts := make([]FinanceAccount, 0)
 		for _, acc := range settings.Finance.Accounts {
 			if slugFilter != "" && !strings.EqualFold(acc.Slug, slugFilter) {
@@ -698,6 +703,7 @@ func TransactionsSync(args []string) (int, error) {
 			}
 
 			if clientID == "" || clientSecret == "" {
+				lastMoneriumSyncIssue = "MONERIUM_CLIENT_ID/MONERIUM_CLIENT_SECRET not set"
 				Warnf("%s⚠ MONERIUM_CLIENT_ID/MONERIUM_CLIENT_SECRET not set, skipping Monerium sync%s", Fmt.Yellow, Fmt.Reset)
 			} else {
 				if !accountSyncMode {
@@ -706,6 +712,7 @@ func TransactionsSync(args []string) (int, error) {
 
 				token, err := moneriumsource.Authenticate(clientID, clientSecret, moneriumEnv)
 				if err != nil {
+					lastMoneriumSyncIssue = fmt.Sprintf("Monerium auth failed: %v", err)
 					Errorf("  %s✗ Auth failed: %v%s", Fmt.Red, err, Fmt.Reset)
 				} else {
 					for _, acc := range moneriumAccounts {
@@ -716,6 +723,7 @@ func TransactionsSync(args []string) (int, error) {
 						Progress(fmt.Sprintf("fetching Monerium orders (%s)", acc.Name))
 						orders, err := moneriumsource.FetchOrders(token, acc.Address, moneriumEnv)
 						if err != nil {
+							lastMoneriumSyncIssue = fmt.Sprintf("Monerium orders fetch failed (%s): %v", acc.Name, err)
 							Errorf("    %s✗ Error: %v%s", Fmt.Red, err, Fmt.Reset)
 							continue
 						}
@@ -961,11 +969,55 @@ func countNewTokenTransfers(existing map[string]bool, transfers []etherscansourc
 	return n
 }
 
+// lastMoneriumSyncIssue records why the most recent Monerium order fetch was
+// skipped or failed ("" = it ran cleanly). The Odoo push reads it to explain
+// held-back mint/burn txs: without the orders the push would create bare
+// "mint EURe" lines, so knowing *why* they are missing is what turns the
+// held-line warning into something the operator can act on.
+var lastMoneriumSyncIssue string
+
 func shouldRunBlockchainEnrichment(slug string, enrichmentRefresh bool, changedSlugs map[string]bool) bool {
 	if enrichmentRefresh {
 		return true
 	}
-	return changedSlugs[strings.ToLower(slug)]
+	if changedSlugs[strings.ToLower(slug)] {
+		return true
+	}
+	// Heal path: a Monerium order can land *after* the on-chain tx was
+	// already cached (the order stays pending while the bank leg settles,
+	// or an earlier run fetched the chain but not the orders). The
+	// blockchain is unchanged then, but the local months still hold
+	// mint/burns without their memo — re-fetch the orders until they heal.
+	return accountHasUnenrichedMoneriumTxs(slug)
+}
+
+// accountHasUnenrichedMoneriumTxs reports whether the account's recent
+// generated months contain an EURe mint/burn that never received its
+// Monerium memo. Local-only check (two small JSON reads, no network).
+func accountHasUnenrichedMoneriumTxs(slug string) bool {
+	now := time.Now().In(BrusselsTZ())
+	for _, m := range []time.Time{now, now.AddDate(0, -1, 0)} {
+		txFile := LoadTransactionsWithPII(DataDir(), m.Format("2006"), m.Format("01"))
+		if txFile == nil {
+			continue
+		}
+		for _, tx := range txFile.Transactions {
+			if !strings.EqualFold(tx.AccountSlug, slug) {
+				continue
+			}
+			switch strings.ToUpper(strings.TrimSpace(tx.Type)) {
+			case "MINT", "BURN":
+			default:
+				continue
+			}
+			if stringMetadata(tx.Metadata, "memo") == "" &&
+				stringMetadata(tx.Metadata, "description") == "" &&
+				stringMetadata(tx.Metadata, "moneriumKind") == "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func tokenTransferKey(tx etherscansource.TokenTransfer) string {

@@ -3073,6 +3073,41 @@ func odooSyncStageFlagsExplicit(args []string) bool {
 // enough (mirrors lastReconcileApplied).
 var lastPushCreatedCount int
 
+// lastPushHeldCount is how many EURe mint/burn txs the last push withheld
+// because their Monerium order metadata was not in the local cache yet.
+// `chb odoo sync` reads it to surface the hold in the per-journal summary.
+var lastPushHeldCount int
+
+// txAwaitingMoneriumMetadata reports whether tx is an EURe mint/burn that has
+// not received its Monerium order enrichment yet. Every mint/burn corresponds
+// to a Monerium order carrying the human memo (invoice ref, "Rent May", …);
+// until that memo is merged in by generate, pushing the tx to Odoo creates a
+// bare "mint EURe" line with no partner and nothing for the reconciler to
+// match — so the push holds it back instead.
+//
+// Enrichment markers (see plugin_monerium.go ProcessTransaction): memo /
+// description in metadata, or moneriumKind. INTERNAL redeems are marked as
+// such *by* the enrichment, so they never reach the MINT/BURN check here.
+func txAwaitingMoneriumMetadata(acc *AccountConfig, tx TransactionEntry) bool {
+	if acc == nil || !strings.EqualFold(acc.Provider, "etherscan") {
+		return false
+	}
+	if acc.Token == nil || !strings.EqualFold(acc.Token.Symbol, "EURe") {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(tx.Type)) {
+	case "MINT", "BURN":
+	default:
+		return false
+	}
+	if stringMetadata(tx.Metadata, "memo") != "" ||
+		stringMetadata(tx.Metadata, "description") != "" ||
+		stringMetadata(tx.Metadata, "moneriumKind") != "" {
+		return false
+	}
+	return true
+}
+
 func AccountOdooPush(slug string, args []string) error {
 	if HasFlag(args, "--help", "-h", "help") {
 		printAccountSlugHelp(slug)
@@ -4826,6 +4861,34 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 		reportLocalImportIDCollisions(creds, uid, acc, localByImportID, existingIDs)
 	}
 
+	// Hold back EURe mint/burn txs whose Monerium enrichment has not landed
+	// yet. Every mint/burn has a Monerium order with the human memo (often
+	// the invoice ref the reconcile matcher needs); pushing before the order
+	// is in the local cache creates a bare "mint EURe" line in Odoo with no
+	// partner and nothing to reconcile against — which then needs a manual
+	// `fix --metadata` pass. Withholding is safe: the tx stays in `missing`
+	// on the next run and is pushed as soon as the metadata is there.
+	var held []TransactionEntry
+	filtered := missing[:0]
+	for _, tx := range missing {
+		if txAwaitingMoneriumMetadata(acc, tx) {
+			held = append(held, tx)
+			continue
+		}
+		filtered = append(filtered, tx)
+	}
+	missing = filtered
+	if len(held) > 0 {
+		Warnf("%s⚠ %s held back — Monerium metadata not fetched yet (mint/burn without memo)%s",
+			Fmt.Yellow, Pluralize(len(held), "mint/burn tx", ""), Fmt.Reset)
+		hint := fmt.Sprintf("chb accounts pull %s --verbose", acc.Slug)
+		if issue := lastMoneriumSyncIssue; issue != "" {
+			Warnf("%s  cause: %s%s", Fmt.Yellow, issue, Fmt.Reset)
+		}
+		Warnf("%s  fix the Monerium fetch, then re-run: %s%s", Fmt.Yellow, hint, Fmt.Reset)
+	}
+	lastPushHeldCount = len(held)
+
 	if len(missing) == 0 {
 		if dryRun {
 			if err := printOdooBlockchainDryRunPlan(creds, uid, acc, localTxs, existingIDs, previewLimit); err != nil {
@@ -4834,8 +4897,14 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 		}
 		// Persist cursor even on the "nothing new" path so the next
 		// sync hits the cheap local-first short-circuit instead of
-		// going through this full re-check.
-		saveOdooJournalPushCursor(creds, uid, acc, localTxs, false)
+		// going through this full re-check. Held-back txs count as an
+		// incomplete push: saving the cursor would let the local-first
+		// short-circuit report "in sync" forever and they would never
+		// be retried.
+		saveOdooJournalPushCursor(creds, uid, acc, localTxs, len(held) > 0)
+		if len(held) > 0 {
+			return blockchainOdooSyncResult{Summary: fmt.Sprintf("%s held (awaiting Monerium metadata)", Pluralize(len(held), "tx", ""))}, nil
+		}
 		if partnerUpdates > 0 {
 			return blockchainOdooSyncResult{Summary: fmt.Sprintf("already in sync, %d partner links updated", partnerUpdates)}, nil
 		}
@@ -4846,7 +4915,11 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 		if err := printOdooBlockchainDryRunPlan(creds, uid, acc, localTxs, existingIDs, previewLimit); err != nil {
 			return blockchainOdooSyncResult{}, err
 		}
-		return blockchainOdooSyncResult{Summary: fmt.Sprintf("dry-run: %d tx would be uploaded", len(missing))}, nil
+		summary := fmt.Sprintf("dry-run: %d tx would be uploaded", len(missing))
+		if len(held) > 0 {
+			summary = fmt.Sprintf("%s, %d held (awaiting Monerium metadata)", summary, len(held))
+		}
+		return blockchainOdooSyncResult{Summary: summary}, nil
 	}
 
 	partnerCache := map[string]int{}
@@ -4949,9 +5022,14 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 	if errors > 0 {
 		summary = fmt.Sprintf("%d new, %d failed", synced, errors)
 	}
+	if len(held) > 0 {
+		summary = fmt.Sprintf("%s, %d held (awaiting Monerium metadata)", summary, len(held))
+	}
 	// Persist the cursor so the next sync's local-first check can
-	// short-circuit. Only when at least one line was actually written.
-	saveOdooJournalPushCursor(creds, uid, acc, localTxs, errors > 0)
+	// short-circuit. Only when every line was actually written — errors
+	// and held-back txs both leave lines missing that a cursor-matched
+	// "in sync" would hide.
+	saveOdooJournalPushCursor(creds, uid, acc, localTxs, errors > 0 || len(held) > 0)
 	return blockchainOdooSyncResult{Summary: summary, Synced: synced}, nil
 }
 

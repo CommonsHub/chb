@@ -249,11 +249,11 @@ func SyncAll(args []string) error {
 	step("Generate", func() (string, error) { return "", Generate(args) })
 
 	// Note: pushing local data to Odoo is intentionally NOT part of
-	// `chb pull`. Pull is read-only (fetch from providers + local
-	// transform). To push to Odoo journals, run
-	// `chb odoo journals push` explicitly after this finishes.
+	// `chb sync`. Sync is read-only (fetch from providers + local
+	// transform). `chb odoo sync` is the one command that brings every
+	// linked Odoo journal up to date (push + reconcile + categorise).
 	if os.Getenv("ODOO_URL") != "" {
-		fmt.Printf("\n  %sTo push to Odoo: chb odoo journals push%s\n", Fmt.Dim, Fmt.Reset)
+		fmt.Printf("\n  %sTo update the Odoo journals: chb odoo sync%s\n", Fmt.Dim, Fmt.Reset)
 	}
 
 	elapsed := time.Since(startedAt).Round(100 * time.Millisecond)
