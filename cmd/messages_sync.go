@@ -3,7 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,7 +13,8 @@ import (
 	discordsource "github.com/CommonsHub/chb/providers/discord"
 )
 
-const discordAPIBase = "https://discord.com/api/v10"
+// var (not const) so tests can point it at a local fake.
+var discordAPIBase = "https://discord.com/api/v10"
 
 type DiscordMessage = discordsource.Message
 type DiscordAuthor = discordsource.Author
@@ -56,7 +56,8 @@ func MessagesSync(args []string) (int, error) {
 
 	// Check --since / --history
 	resolvedSince, isSince := ResolveSinceMonth(args, "messages")
-	recentStartMonth := DefaultRecentStartMonth(time.Now())
+	now := time.Now()
+	recentStartMonth := DefaultRecentStartMonth(now)
 	defaultRecentWindow := !isSince && !posFound && monthFilter == ""
 
 	// Populate the guild-name cache so the sync header can render the
@@ -98,7 +99,39 @@ func MessagesSync(args []string) (int, error) {
 			}
 			messages, err = fetchAllChannelMessages(channelID, token, stopMonth)
 		} else if defaultRecentWindow {
-			messages, err = fetchAllChannelMessages(channelID, token, recentStartMonth)
+			// Incremental: stop paginating at the first already-cached
+			// message and merge with the existing window instead of
+			// re-downloading the whole window every sync. A quiet channel
+			// costs one request. Falls back to the full window pull when
+			// nothing is cached yet (first sync of a channel).
+			windowMonths := monthsInWindow(recentStartMonth, now)
+			if newestCached := newestCachedMessageID(channelID, windowMonths); newestCached != "" {
+				var fetched []DiscordMessage
+				fetched, err = fetchMessagesSinceCached(channelID, token, newestCached)
+				if err == nil {
+					var existing []DiscordMessage
+					for _, ym := range windowMonths {
+						parts := strings.Split(ym, "-")
+						existing = append(existing, readCachedChannelMonth(channelID, parts[0], parts[1])...)
+					}
+					newCount := 0
+					for _, m := range fetched {
+						if snowflakeLess(newestCached, m.ID) {
+							newCount++
+						}
+					}
+					messages = mergeMessagesByID(existing, fetched)
+					if newCount == 0 {
+						// Nothing new: skip the rewrite entirely — no reason
+						// to touch mtimes and re-trigger generate.
+						fmt.Printf("    %sup to date%s\n", Fmt.Dim, Fmt.Reset)
+						continue
+					}
+					fmt.Printf("    %s%d new%s\n", Fmt.Dim, newCount, Fmt.Reset)
+				}
+			} else {
+				messages, err = fetchAllChannelMessages(channelID, token, recentStartMonth)
+			}
 		} else {
 			// Explicit month/year filters only need the latest page unless the user
 			// requested a broader historical sync.
@@ -190,8 +223,8 @@ func MessagesSync(args []string) (int, error) {
 			}
 		}
 
-		// Rate limit between channels
-		time.Sleep(500 * time.Millisecond)
+		// No fixed inter-channel sleep: the pacer reads the rate-limit
+		// headers and waits exactly when Discord says the bucket is empty.
 	}
 
 	fmt.Printf("\n%s✓ Done!%s %d messages synced\n\n", Fmt.Green, Fmt.Reset, totalMessages)
@@ -200,43 +233,129 @@ func MessagesSync(args []string) (int, error) {
 	return totalMessages, nil
 }
 
-// fetchLatestMessages fetches one page (100 messages) from a Discord channel.
-// No pagination — used for quick sync of latest data.
-func fetchLatestMessages(channelID, token string) ([]DiscordMessage, error) {
+// fetchMessagePage fetches one page (up to 100 messages, newest first) from a
+// Discord channel through the rate-limit pacer. before="" starts at the top.
+func fetchMessagePage(p *discordPacer, channelID, token, before string) ([]DiscordMessage, error) {
 	url := fmt.Sprintf("%s/channels/%s/messages?limit=100", discordAPIBase, channelID)
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
+	if before != "" {
+		url += "&before=" + before
 	}
-	req.Header.Set("Authorization", "Bot "+token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := p.get(url, token)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode == 429 {
-		var rateLimitResp struct {
-			RetryAfter float64 `json:"retry_after"`
-		}
-		json.NewDecoder(resp.Body).Decode(&rateLimitResp)
-		wait := time.Duration(rateLimitResp.RetryAfter*1000+100) * time.Millisecond
-		time.Sleep(wait)
-		return fetchLatestMessages(channelID, token)
-	}
-
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("Discord API error: %d", resp.StatusCode)
 	}
-
 	var messages []DiscordMessage
 	if err := json.NewDecoder(resp.Body).Decode(&messages); err != nil {
 		return nil, err
 	}
 	return messages, nil
+}
+
+// fetchLatestMessages fetches one page (100 messages) from a Discord channel.
+// No pagination — used for quick sync of latest data.
+func fetchLatestMessages(channelID, token string) ([]DiscordMessage, error) {
+	return fetchMessagePage(&discordPacer{}, channelID, token, "")
+}
+
+// fetchMessagesSinceCached paginates backwards only until it meets a message
+// we already have, and returns everything fetched (newest first).
+//
+// This is what keeps a routine `chb sync` cheap: a quiet channel costs exactly
+// ONE request (its newest page overlaps the cache immediately) instead of
+// re-downloading the whole recent window every run. The overlap page is
+// returned in full on purpose — merging it refreshes reactions/edits on the
+// ~100 most recent messages.
+func fetchMessagesSinceCached(channelID, token, newestCachedID string) ([]DiscordMessage, error) {
+	p := &discordPacer{}
+	var all []DiscordMessage
+	before := ""
+	for {
+		page, err := fetchMessagePage(p, channelID, token, before)
+		if err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			return all, nil
+		}
+		all = append(all, page...)
+		for _, msg := range page {
+			if !snowflakeLess(newestCachedID, msg.ID) {
+				// Reached (or passed) the newest cached message: caught up.
+				return all, nil
+			}
+		}
+		before = page[len(page)-1].ID
+	}
+}
+
+// mergeMessagesByID overlays fetched onto existing (fetched wins — it carries
+// the current reaction counts and edits) and returns the union newest-first.
+func mergeMessagesByID(existing, fetched []DiscordMessage) []DiscordMessage {
+	byID := make(map[string]DiscordMessage, len(existing)+len(fetched))
+	for _, m := range existing {
+		byID[m.ID] = m
+	}
+	for _, m := range fetched {
+		byID[m.ID] = m
+	}
+	out := make([]DiscordMessage, 0, len(byID))
+	for _, m := range byID {
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return snowflakeLess(out[j].ID, out[i].ID) })
+	return out
+}
+
+// newestCachedMessageID returns the highest message ID cached for a channel
+// in the given months ("" when nothing is cached yet).
+func newestCachedMessageID(channelID string, months []string) string {
+	newest := ""
+	for _, ym := range months {
+		parts := strings.Split(ym, "-")
+		if len(parts) != 2 {
+			continue
+		}
+		for _, msg := range readCachedChannelMonth(channelID, parts[0], parts[1]) {
+			if snowflakeLess(newest, msg.ID) {
+				newest = msg.ID
+			}
+		}
+	}
+	return newest
+}
+
+// readCachedChannelMonth loads one month's cached messages for a channel
+// (nil when the month has no cache).
+func readCachedChannelMonth(channelID, year, month string) []DiscordMessage {
+	path := discordsource.ChannelPath(DataDir(), year, month, channelID)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var cache MessagesCacheFile
+	if json.Unmarshal(data, &cache) != nil {
+		return nil
+	}
+	return cache.Messages
+}
+
+// monthsInWindow lists YYYY-MM strings from startMonth to the current month.
+func monthsInWindow(startMonth string, now time.Time) []string {
+	var months []string
+	t, err := time.Parse("2006-01", startMonth)
+	if err != nil {
+		return months
+	}
+	end := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	for !t.After(end) {
+		months = append(months, t.Format("2006-01"))
+		t = t.AddDate(0, 1, 0)
+	}
+	return months
 }
 
 // fetchAllChannelMessages fetches messages from Discord, paginating backwards.
@@ -246,50 +365,13 @@ func fetchAllChannelMessages(channelID, token, stopBeforeMonth string) ([]Discor
 	var allMessages []DiscordMessage
 	var before string
 	tz := BrusselsTZ()
+	pacer := &discordPacer{}
 
 	for {
-		url := fmt.Sprintf("%s/channels/%s/messages?limit=100", discordAPIBase, channelID)
-		if before != "" {
-			url += "&before=" + before
-		}
-
-		req, err := http.NewRequest("GET", url, nil)
+		messages, err := fetchMessagePage(pacer, channelID, token, before)
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Bot "+token)
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-
-		if resp.StatusCode == 429 {
-			// Rate limited
-			var rateLimitResp struct {
-				RetryAfter float64 `json:"retry_after"`
-			}
-			json.NewDecoder(resp.Body).Decode(&rateLimitResp)
-			resp.Body.Close()
-
-			wait := time.Duration(rateLimitResp.RetryAfter*1000+100) * time.Millisecond
-			fmt.Printf("    %sRate limited, waiting %v%s\n", Fmt.Yellow, wait, Fmt.Reset)
-			time.Sleep(wait)
-			continue
-		}
-
-		if resp.StatusCode != 200 {
-			resp.Body.Close()
-			return nil, fmt.Errorf("Discord API error: %d", resp.StatusCode)
-		}
-
-		var messages []DiscordMessage
-		if err := json.NewDecoder(resp.Body).Decode(&messages); err != nil {
-			resp.Body.Close()
-			return nil, err
-		}
-		resp.Body.Close()
 
 		if len(messages) == 0 {
 			break
