@@ -79,7 +79,11 @@ func RulesAdd(args []string) {
 		return
 	}
 
-	fmt.Printf("\n%s✓ Rule %s%s — %d total rules in %s\n\n", Fmt.Green, action, Fmt.Reset, len(rules), rulesPath())
+	savedTo := rulesPath()
+	if ruleIsPrivate(rule) {
+		savedTo = rulesLocalPath()
+	}
+	fmt.Printf("\n%s✓ Rule %s%s — %d total rules, saved to %s\n\n", Fmt.Green, action, Fmt.Reset, len(rules), savedTo)
 	fmt.Printf("  %sMatch:%s   %s\n", Fmt.Dim, Fmt.Reset, describeRuleMatch(rule.Match))
 	fmt.Printf("  %sAssign:%s  %s\n\n", Fmt.Dim, Fmt.Reset, describeRuleAssign(rule.Assign))
 }

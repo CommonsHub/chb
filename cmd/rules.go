@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -101,6 +102,14 @@ type Rule struct {
 	Target string     `json:"target,omitempty"`
 	Match  RuleMatch  `json:"match"`
 	Assign RuleAssign `json:"assign"`
+
+	// Include marks this entry as the splice point for rules.local.json
+	// rather than a real rule (value: "rules.local.json"). Rule order is
+	// load-bearing — the shared file layers specific rules, then IBAN
+	// heuristics, then catch-alls — so the marker records where the private
+	// IBAN rules belong in that layering. Old binaries parse a marker as a
+	// match-everything / assign-nothing rule, which is a harmless no-op.
+	Include string `json:"include,omitempty"`
 }
 
 // ruleTarget normalises the Target field for comparison. Empty / blank
@@ -118,33 +127,268 @@ func rulesPath() string {
 	return settingsFilePath("rules.json")
 }
 
-// LoadRules reads rules from APP_DATA_DIR/settings/rules.json. The file is
-// seeded from the embedded defaults on first run and kept in sync by
-// EnsureSettingsBootstrapped when the user hasn't edited it locally.
+// rulesLocalPath returns the machine-local private rules file. It holds the
+// rules whose matchers embed third-party personal data (counterparty IBANs)
+// and therefore must never reach the embedded defaults of this public repo.
+// It lives only in APP_DATA_DIR/settings/ and is shared between machines
+// out-of-band.
+func rulesLocalPath() string {
+	return settingsFilePath("rules.local.json")
+}
+
+// localRulesInclude is the marker value for the splice-point entry in
+// rules.json: {"include": "rules.local.json"}.
+const localRulesInclude = "rules.local.json"
+
+// LoadRules returns the merged rule list: the shared rules (rules.json,
+// seeded from the embedded defaults) with the private rules
+// (rules.local.json) spliced in at the {"include": "rules.local.json"}
+// marker. Order is load-bearing (fallback assignment is first-match-wins),
+// so the marker keeps the private IBAN heuristics in their layer: after the
+// specific description rules, before the catch-alls. Without a marker the
+// private rules run first.
 func LoadRules() ([]Rule, error) {
-	data, err := os.ReadFile(rulesPath())
+	private, err := readRulesFile(rulesLocalPath())
+	if err != nil {
+		return nil, err
+	}
+	shared, err := readRulesFile(rulesPath())
+	if err != nil {
+		return nil, err
+	}
+	return spliceLocalRules(shared, private), nil
+}
+
+// spliceLocalRules inserts the private rules at the first marker entry in
+// the shared list (extra markers are dropped), or ahead of everything when
+// no marker is present. Markers never appear in the merged list.
+func spliceLocalRules(shared, private []Rule) []Rule {
+	out := make([]Rule, 0, len(shared)+len(private))
+	spliced := false
+	for _, r := range shared {
+		if r.Include != "" {
+			if !spliced {
+				out = append(out, private...)
+				spliced = true
+			}
+			continue
+		}
+		out = append(out, r)
+	}
+	if !spliced && len(private) > 0 {
+		out = append(append(make([]Rule, 0, len(private)+len(out)), private...), out...)
+	}
+	return out
+}
+
+func readRulesFile(path string) ([]Rule, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []Rule{}, nil
+			return nil, nil
 		}
 		return nil, err
 	}
 	var rules []Rule
 	if err := json.Unmarshal(data, &rules); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
 	}
 	return rules, nil
 }
 
-// SaveRules writes rules to APP_DATA_DIR/settings/rules.json.
+// sharedRuleIBANs is the set of normalised IBANs appearing in the embedded
+// default rules.json — IBANs the org has deliberately published (corporate
+// accounts like Stripe's collection IBAN). Rules matching those may live in
+// the shared file; a rule matching any other IBAN is private. Computed once
+// per process; tests override via sharedRuleIBANsForTest.
+var (
+	sharedRuleIBANsOnce    sync.Once
+	sharedRuleIBANsSet     map[string]bool
+	sharedRuleIBANsForTest map[string]bool
+)
+
+func sharedRuleIBANs() map[string]bool {
+	if sharedRuleIBANsForTest != nil {
+		return sharedRuleIBANsForTest
+	}
+	sharedRuleIBANsOnce.Do(func() {
+		sharedRuleIBANsSet = map[string]bool{}
+		data, err := readDefaultSettingsFile("rules.json")
+		if err != nil {
+			return
+		}
+		var rules []Rule
+		if json.Unmarshal(data, &rules) != nil {
+			return
+		}
+		for _, r := range rules {
+			if iban := normalizeIBAN(r.Match.IBAN); iban != "" {
+				sharedRuleIBANsSet[iban] = true
+			}
+		}
+	})
+	return sharedRuleIBANsSet
+}
+
+// ruleIsPrivate reports whether a rule must live in rules.local.json: it
+// matches on a concrete counterparty IBAN that the embedded defaults don't
+// already publish. Glob patterns ("DE*") name no account and stay shared;
+// so do IBANs the org deliberately committed to the public defaults
+// (corporate accounts like Stripe's collection IBAN).
+func ruleIsPrivate(r Rule) bool {
+	if r.Include != "" {
+		return false
+	}
+	iban := normalizeIBAN(r.Match.IBAN)
+	if iban == "" || strings.ContainsAny(iban, "*?") {
+		return false
+	}
+	return !sharedRuleIBANs()[iban]
+}
+
+// SaveRules persists the merged rule list, splitting it back into the two
+// files: private IBAN rules go to rules.local.json (0600, never committed),
+// everything else to rules.json with an {"include": "rules.local.json"}
+// marker recording where the private block sits in the order. The invariant
+// keeps third-party IBANs out of the public repo no matter which command
+// (rules add, the TUIs, categorize) edited the list.
 func SaveRules(rules []Rule) error {
+	var private, shared []Rule
+	markerAt := -1
+	for _, r := range rules {
+		if r.Include != "" {
+			// A marker in the input (hand-edited file loaded raw) keeps its
+			// position; LoadRules never emits one.
+			if markerAt == -1 {
+				markerAt = len(shared)
+			}
+			continue
+		}
+		if ruleIsPrivate(r) {
+			if markerAt == -1 {
+				markerAt = len(shared)
+			}
+			private = append(private, r)
+		} else {
+			shared = append(shared, r)
+		}
+	}
+	localExists := false
+	if _, err := os.Stat(rulesLocalPath()); err == nil {
+		localExists = true
+	}
+	if markerAt == -1 && (len(private) > 0 || localExists) {
+		// No private rule in the merged list to anchor on: keep the marker
+		// where the current shared file has it.
+		markerAt = existingRulesMarkerIndex()
+	}
+	withMarker := shared
+	if markerAt >= 0 {
+		if markerAt > len(shared) {
+			markerAt = len(shared)
+		}
+		withMarker = make([]Rule, 0, len(shared)+1)
+		withMarker = append(withMarker, shared[:markerAt]...)
+		withMarker = append(withMarker, Rule{Include: localRulesInclude})
+		withMarker = append(withMarker, shared[markerAt:]...)
+	}
+	if err := writeRulesJSON(rulesPath(), withMarker, 0644); err != nil {
+		return err
+	}
+	if len(private) == 0 && !localExists {
+		// Don't create a local file just to hold [].
+		return nil
+	}
+	return writeRulesJSON(rulesLocalPath(), private, 0600)
+}
+
+// existingRulesMarkerIndex returns the marker's position in the on-disk
+// shared file, counted in real (non-marker) rules, or 0 when absent.
+func existingRulesMarkerIndex() int {
+	shared, err := readRulesFile(rulesPath())
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, r := range shared {
+		if r.Include != "" {
+			return n
+		}
+		n++
+	}
+	return 0
+}
+
+func writeRulesJSON(path string, rules []Rule, mode os.FileMode) error {
+	if rules == nil {
+		rules = []Rule{}
+	}
 	data, err := json.MarshalIndent(rules, "", "  ")
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(rulesPath())
-	os.MkdirAll(dir, 0755)
-	return os.WriteFile(rulesPath(), data, 0644)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, mode)
+}
+
+// migrateIBANRulesToLocal splits third-party IBAN rules out of rules.json
+// into rules.local.json, leaving an {"include": "rules.local.json"} marker
+// at the median of the extracted rules' positions — where the bulk of the
+// IBAN block sat, preserving the file's specific-rules → IBAN-heuristics →
+// catch-alls layering. Idempotent: after the split the shared file holds no
+// private rules, so re-running finds nothing to move. It runs before the
+// defaults reconciler so a machine whose only rules.json edits were IBAN
+// rules converges back onto the embedded shared default.
+func migrateIBANRulesToLocal(dir string) {
+	sharedPath := filepath.Join(dir, "rules.json")
+	data, err := os.ReadFile(sharedPath)
+	if err != nil {
+		return
+	}
+	var rules []Rule
+	if json.Unmarshal(data, &rules) != nil {
+		return
+	}
+	var private, shared []Rule
+	var positions []int // shared-list index each private rule sat before
+	hasMarker := false
+	for _, r := range rules {
+		if r.Include != "" {
+			hasMarker = true
+			shared = append(shared, r)
+			continue
+		}
+		if ruleIsPrivate(r) {
+			private = append(private, r)
+			positions = append(positions, len(shared))
+		} else {
+			shared = append(shared, r)
+		}
+	}
+	if len(private) == 0 {
+		return
+	}
+	if !hasMarker {
+		markerAt := positions[len(positions)/2]
+		shared = append(shared, Rule{})
+		copy(shared[markerAt+1:], shared[markerAt:])
+		shared[markerAt] = Rule{Include: localRulesInclude}
+	}
+	localPath := filepath.Join(dir, "rules.local.json")
+	existing, err := readRulesFile(localPath)
+	if err != nil {
+		return
+	}
+	if err := writeRulesJSON(localPath, append(existing, private...), 0600); err != nil {
+		return
+	}
+	if err := writeRulesJSON(sharedPath, shared, 0644); err != nil {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "  %s✓%s moved %d IBAN rule(s) from rules.json to rules.local.json (kept out of the shared defaults)\n",
+		Fmt.Green, Fmt.Reset, len(private))
 }
 
 // counterpartyMatchTargets returns the lower-cased identifiers a
@@ -184,6 +428,9 @@ func globMatchAny(pattern string, targets []string) bool {
 
 // MatchesTransaction checks if a rule matches a transaction.
 func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
+	if r.Include != "" {
+		return false
+	}
 	if r.ruleTarget() != "transaction" {
 		return false
 	}
@@ -375,6 +622,9 @@ func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
 
 // RuleSummary returns a human-readable summary of the match conditions.
 func (r *Rule) RuleSummary() string {
+	if r.Include != "" {
+		return fmt.Sprintf("⋯ splice point for %s", r.Include)
+	}
 	var parts []string
 	if r.Match.Sender != "" {
 		parts = append(parts, fmt.Sprintf("sender: %s", r.Match.Sender))
@@ -442,6 +692,9 @@ func (r *Rule) RuleSummary() string {
 // the canonical pattern for a default-assign rule (e.g. "every invoice
 // gets collective=commonshub unless overridden").
 func (r *Rule) MatchesMove(m OdooOutgoingInvoicePublic, partner string, kind moveKind) bool {
+	if r.Include != "" {
+		return false
+	}
 	target := r.ruleTarget()
 	if kind.isBill {
 		if target != "bill" {

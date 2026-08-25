@@ -1,25 +1,44 @@
 {
-  "commonshub": {
-    "name": "Commons Hub",
-    "icon": "/favicon.png",
-    "aliases": ["commonshub-brussels"]
-  },
-  "genesis": {
-    "name": "Genesis",
-    "icon": "/images/collectives/genesis.png"
-  },
-  "openletter": {
-    "name": "Open Letter",
-    "icon": "/images/collectives/openletter.png"
-  },
-  "opensourcevillage": {
-    "name": "opensourcevillage"
-  },
-  "regensunite": {
-    "name": "Regens Unite",
-    "icon": "/images/partners/regensunite.avif"
-  },
-  "wisecrowds": {
-    "name": "wisecrowds"
-  }
+ "commonshub": {
+  "name": "Commons Hub",
+  "icon": "/favicon.png",
+  "aliases": [
+   "commonshub-brussels"
+  ]
+ },
+ "genesis": {
+  "name": "Genesis",
+  "icon": "/images/collectives/genesis.png"
+ },
+ "openletter": {
+  "name": "Open Letter",
+  "icon": "/images/collectives/openletter.png"
+ },
+ "opensourcevillage": {
+  "name": "opensourcevillage"
+ },
+ "regensunite": {
+  "name": "Regens Unite",
+  "icon": "/images/partners/regensunite.avif"
+ },
+ "wisecrowds": {
+  "name": "wisecrowds"
+ },
+ "citizenwallet": {
+  "name": "Citizen Wallet"
+ },
+ "brusselspay": {
+  "name": "Brussels Pay"
+ },
+ "idg": {
+  "name": "IDG",
+  "aliases": [
+   "day-2-idg-summit-2025-brussels-watch-party-17496712",
+   "idg-summit-2025-b805d5b0",
+   "pre-summit-idgs-discovery-session-f9b35d39"
+  ]
+ },
+ "eurb": {
+  "name": "EURb"
+ }
 }

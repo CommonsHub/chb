@@ -30,8 +30,8 @@
     "direction": "income"
   },
   {
-    "slug": "grants",
-    "label": "Grants",
+    "slug": "grant",
+    "label": "Grant",
     "direction": "income"
   },
   {
@@ -95,19 +95,9 @@
     "direction": "expense"
   },
   {
-    "slug": "catering",
-    "label": "Catering",
-    "direction": "income"
-  },
-  {
     "slug": "furniture",
     "label": "Furniture",
     "direction": "expense"
-  },
-  {
-    "slug": "Coworking",
-    "label": "Coworking",
-    "direction": "income"
   },
   {
     "slug": "accounting",
@@ -118,5 +108,30 @@
     "slug": "consulting",
     "label": "Consulting",
     "direction": "expense"
+  },
+  {
+    "slug": "subsidy",
+    "label": "Subsidy",
+    "direction": "income"
+  },
+  {
+    "slug": "rental",
+    "label": "Rental",
+    "direction": "income"
+  },
+  {
+    "slug": "debt",
+    "label": "Debt",
+    "direction": "income"
+  },
+  {
+    "slug": "vat",
+    "label": "VAT",
+    "direction": "income"
+  },
+  {
+    "slug": "sponsoring",
+    "label": "Sponsoring",
+    "direction": "income"
   }
 ]

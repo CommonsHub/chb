@@ -65,6 +65,33 @@ Evaluated in file order — most-specific rules first. The first matching rule w
 
 Edit with `chb rules edit` (opens in `$EDITOR`) or via the interactive TUI `chb rules` (which lets you preview matches before committing).
 
+### `rules.local.json` — private IBAN rules (never committed)
+
+`rules.json` is seeded from the embedded defaults in this **public** repo, so
+it must not contain third-party bank account numbers. Any rule matching a
+concrete counterparty IBAN lives in
+`$APP_DATA_DIR/settings/rules.local.json` instead (mode 0600, shared between
+machines out-of-band). Two kinds of IBAN rule stay in the shared file:
+
+- **glob patterns** (`"iban": "DE*"`) — they name no account;
+- **IBANs already published in the embedded default** (e.g. Stripe's
+  corporate collection IBAN) — deliberately committed by the org.
+
+Because rule order is load-bearing, the shared file carries a splice marker:
+
+```json
+{ "include": "rules.local.json" }
+```
+
+`LoadRules` merges the private rules into the shared list at that marker, so
+the IBAN heuristics keep their layer — after the specific description rules,
+before the catch-alls. Old binaries parse the marker as a
+match-everything/assign-nothing rule, which is a harmless no-op. `SaveRules`
+re-splits automatically: add or edit rules through any `chb` command and a
+concrete-IBAN rule always lands in `rules.local.json`. A legacy monolithic
+`rules.json` is split automatically on the first run (the migration prints
+what it moved and inserts the marker where the bulk of the IBAN block sat).
+
 ## `odoo_mapping.json` — Odoo-specific lookup
 
 Maps a semantic tag (category / collective + direction) to an Odoo `account_code` + `partner_id`. **Lookup table, not a rule engine** — no patterns, just key → value.

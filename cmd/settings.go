@@ -132,6 +132,10 @@ func migrateLegacySettingsSchemas(dir string) {
 	// Move per-account Odoo journal IDs into odoo-journals.json before the
 	// reconciler force-overwrites accounts.json and discards them.
 	migrateOdooJournalLinks(dir)
+	// Split third-party IBAN rules out of rules.json into rules.local.json
+	// before the reconciler compares it against the embedded default (which
+	// never contains them — this is a public repo).
+	migrateIBANRulesToLocal(dir)
 }
 
 // forceOverwriteDefaults are embedded defaults whose content the embedded copy

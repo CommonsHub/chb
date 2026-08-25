@@ -315,6 +315,11 @@ func summarizeSettingsFile(name string, settings *Settings) string {
 
 	case "rules.json":
 		rules, _ := LoadRules()
+		private, _ := readRulesFile(rulesLocalPath())
+		if len(private) > 0 {
+			return fmt.Sprintf("%d rules (%d shared + %d in rules.local.json)",
+				len(rules), len(rules)-len(private), len(private))
+		}
 		return fmt.Sprintf("%d rules", len(rules))
 
 	case "tokens.json":

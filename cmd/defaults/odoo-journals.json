@@ -3,10 +3,10 @@
   "address:0xab33f1bc3a9d35fe6dad14dd2947e774cf58bc78": 52,
   "address:0xd578e7cd845e1ecd979b04784e77068d5ebd8716": 44,
   "iban:BE46734072238636": 28,
-  "ethereum:100:address:0x20451461d5b609c5a3256d78f64c4afee860dc32": 18,
+  "ethereum:100:address:0x20451461d5b609c5a3256d78f64c4afee860dc32": 57,
   "ethereum:100:address:0x646c32cf6843540cef790f764952a959fb9c49f5": 50,
   "ethereum:100:address:0x6fdf0aae33e313d9c98d2aa19bcd8ef777912cbf": 47,
   "ethereum:100:address:0xb01ccce2d75d517ee520de31eae6afca735aadc1": 56,
-  "ethereum:100:address:0xdd080195ee4d4eb96c36037d372744744eb44a96": 54,
-  "stripe:acct_1Nn0FaFAhaWeDyow": 48
+  "stripe:acct_1Nn0FaFAhaWeDyow": 48,
+  "ethereum:100:address:0xdd080195ee4d4eb96c36037d372744744eb44a96": 54
 }

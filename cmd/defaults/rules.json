@@ -1,6 +1,126 @@
 [
   {
     "match": {
+      "description": "*PYSI*"
+    },
+    "assign": {
+      "category": "subsidy",
+      "collective": "brusselspay"
+    }
+  },
+  {
+    "match": {
+      "description": "*idg-summit*"
+    },
+    "assign": {
+      "category": "ticket",
+      "collective": "idg"
+    }
+  },
+  {
+    "match": {
+      "description": "*idg summit*"
+    },
+    "assign": {
+      "category": "ticket",
+      "collective": "idg"
+    }
+  },
+  {
+    "match": {
+      "collective": "*idg*",
+      "direction": "in",
+      "uncategorized": true
+    },
+    "assign": {
+      "category": "ticket",
+      "collective": "idg"
+    }
+  },
+  {
+    "match": {
+      "description": "*TVA*"
+    },
+    "assign": {
+      "category": "vat"
+    }
+  },
+  {
+    "match": {
+      "amount": 302.5,
+      "direction": "in"
+    },
+    "assign": {
+      "category": "coworking",
+      "collective": "commonshub",
+      "override": true
+    }
+  },
+  {
+    "match": {
+      "amount": 121,
+      "direction": "in"
+    },
+    "assign": {
+      "category": "coworking",
+      "collective": "commonshub",
+      "override": true
+    }
+  },
+  {
+    "match": {
+      "counterparty": "0x371ca2c8f1d02864c7306e5e5ed5dc6edf2dd19c",
+      "direction": "in"
+    },
+    "assign": {
+      "category": "donation",
+      "collective": "regensunite"
+    }
+  },
+  {
+    "match": {
+      "counterparty": "0x371ca2c8f1d02864c7306e5e5ed5dc6edf2dd19c"
+    },
+    "assign": {
+      "collective": "regensunite"
+    }
+  },
+  {
+    "match": {
+      "counterparty": "0x00952d1747a1a3c803f30534bff11348a7d40651",
+      "direction": "in"
+    },
+    "assign": {
+      "category": "grant",
+      "collective": "citizenwallet"
+    }
+  },
+  {
+    "match": {
+      "counterparty": "0x00952d1747a1a3c803f30534bff11348a7d40651"
+    },
+    "assign": {
+      "collective": "citizenwallet"
+    }
+  },
+  {
+    "match": {
+      "description": "*CHB/*"
+    },
+    "assign": {
+      "category": "rental"
+    }
+  },
+  {
+    "match": {
+      "description": "*location*"
+    },
+    "assign": {
+      "category": "rental"
+    }
+  },
+  {
+    "match": {
       "provider": "stripe",
       "currency": "EUR",
       "amount": 10,
@@ -27,7 +147,81 @@
     "match": {
       "provider": "stripe",
       "direction": "in",
-      "description": "*Daily pass*"
+      "product": "*Commons Hub*",
+      "uncategorized": true
+    },
+    "assign": {
+      "category": "donation",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "direction": "in",
+      "product": "*Open Letter*",
+      "uncategorized": true
+    },
+    "assign": {
+      "category": "donation",
+      "collective": "openletter"
+    }
+  },
+  {
+    "match": {
+      "description": "*Daily pass*",
+      "provider": "stripe",
+      "direction": "in"
+    },
+    "assign": {
+      "category": "coworking",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*10-day pass*",
+      "provider": "stripe",
+      "direction": "in"
+    },
+    "assign": {
+      "category": "coworking",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "Subscription*",
+      "provider": "stripe",
+      "currency": "EUR",
+      "amount": 100,
+      "direction": "in"
+    },
+    "assign": {
+      "category": "membership",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "Subscription*",
+      "provider": "stripe",
+      "currency": "EUR",
+      "amount": 302.5,
+      "direction": "in"
+    },
+    "assign": {
+      "category": "coworking",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "Subscription*",
+      "provider": "stripe",
+      "currency": "EUR",
+      "amount": 121,
+      "direction": "in"
     },
     "assign": {
       "category": "coworking",
@@ -37,34 +231,29 @@
   {
     "match": {
       "provider": "stripe",
-      "direction": "in",
-      "description": "*10-day pass*"
+      "kind": "payout"
     },
     "assign": {
-      "category": "coworking",
-      "collective": "commonshub"
+      "category": "internal_transfer",
+      "type": "INTERNAL"
     }
   },
   {
     "match": {
       "provider": "stripe",
-      "currency": "EUR",
-      "amount": 10,
-      "direction": "in",
-      "description": "Subscription create*"
+      "kind": "fee"
     },
     "assign": {
-      "category": "membership",
-      "collective": "commonshub"
+      "category": "stripe_fee"
     }
   },
   {
     "match": {
+      "description": "Subscription create*",
       "provider": "stripe",
       "currency": "EUR",
       "amount": 10,
-      "direction": "in",
-      "description": "Subscription creation*"
+      "direction": "in"
     },
     "assign": {
       "category": "membership",
@@ -73,11 +262,24 @@
   },
   {
     "match": {
+      "description": "Subscription creation*",
       "provider": "stripe",
       "currency": "EUR",
       "amount": 10,
-      "direction": "in",
-      "description": "Subscription update*"
+      "direction": "in"
+    },
+    "assign": {
+      "category": "membership",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "Subscription update*",
+      "provider": "stripe",
+      "currency": "EUR",
+      "amount": 10,
+      "direction": "in"
     },
     "assign": {
       "category": "membership",
@@ -89,7 +291,8 @@
       "description": "*monthly financial contribution*"
     },
     "assign": {
-      "category": "membership"
+      "category": "membership",
+      "collective": "commonshub"
     }
   },
   {
@@ -97,7 +300,8 @@
       "description": "*member*"
     },
     "assign": {
-      "category": "membership"
+      "category": "membership",
+      "collective": "commonshub"
     }
   },
   {
@@ -105,7 +309,8 @@
       "account": "fridge"
     },
     "assign": {
-      "category": "fridge"
+      "category": "fridge",
+      "collective": "commonshub"
     }
   },
   {
@@ -200,6 +405,606 @@
     }
   },
   {
+    "match": {},
+    "assign": {},
+    "include": "rules.local.json"
+  },
+  {
+    "match": {
+      "recipient": "*proximus*",
+      "provider": "kbcbrussels"
+    },
+    "assign": {
+      "category": "internet"
+    }
+  },
+  {
+    "match": {
+      "description": "*proximus*",
+      "provider": "kbcbrussels"
+    },
+    "assign": {
+      "category": "internet"
+    }
+  },
+  {
+    "match": {
+      "recipient": "*electrabel*",
+      "provider": "kbcbrussels"
+    },
+    "assign": {
+      "category": "utilities"
+    }
+  },
+  {
+    "match": {
+      "recipient": "*engie*",
+      "provider": "kbcbrussels"
+    },
+    "assign": {
+      "category": "utilities"
+    }
+  },
+  {
+    "match": {
+      "recipient": "*sibelga*",
+      "provider": "kbcbrussels"
+    },
+    "assign": {
+      "category": "utilities"
+    }
+  },
+  {
+    "match": {
+      "recipient": "*brupower*",
+      "provider": "kbcbrussels"
+    },
+    "assign": {
+      "category": "utilities"
+    }
+  },
+  {
+    "match": {
+      "description": "*electrabel*",
+      "provider": "kbcbrussels"
+    },
+    "assign": {
+      "category": "utilities"
+    }
+  },
+  {
+    "match": {
+      "description": "*engie*",
+      "provider": "kbcbrussels"
+    },
+    "assign": {
+      "category": "utilities"
+    }
+  },
+  {
+    "match": {
+      "description": "*sibelga*",
+      "provider": "kbcbrussels"
+    },
+    "assign": {
+      "category": "utilities"
+    }
+  },
+  {
+    "match": {
+      "description": "*brupower*",
+      "provider": "kbcbrussels"
+    },
+    "assign": {
+      "category": "utilities"
+    }
+  },
+  {
+    "match": {
+      "description": "*postmark*"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "openletter"
+    }
+  },
+  {
+    "match": {
+      "description": "*heroku*"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "openletter"
+    }
+  },
+  {
+    "match": {
+      "description": "*notion labs*"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*odoo*"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*hetzner*"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*isabel nv*"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*bol.com*"
+    },
+    "assign": {
+      "category": "equipment",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*coolblue*"
+    },
+    "assign": {
+      "category": "equipment",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*amzn*"
+    },
+    "assign": {
+      "category": "equipment",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*amazon*"
+    },
+    "assign": {
+      "category": "equipment",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*vistaprint*"
+    },
+    "assign": {
+      "category": "marketing",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*deliveroo*"
+    },
+    "assign": {
+      "category": "catering",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*donation*"
+    },
+    "assign": {
+      "category": "donation",
+      "override": true
+    }
+  },
+  {
+    "match": {
+      "description": "*payment via debit mastercard*",
+      "provider": "kbcbrussels",
+      "direction": "out"
+    },
+    "assign": {
+      "category": "card_payment"
+    }
+  },
+  {
+    "match": {
+      "iban": "DE*"
+    },
+    "assign": {
+      "collective": "regensunite"
+    }
+  },
+  {
+    "match": {
+      "description": "*Automatic Tax*",
+      "provider": "stripe"
+    },
+    "assign": {
+      "category": "stripe_fee"
+    }
+  },
+  {
+    "match": {
+      "description": "*Usage Fee*",
+      "provider": "stripe"
+    },
+    "assign": {
+      "category": "stripe_fee"
+    }
+  },
+  {
+    "match": {
+      "description": "*MEM/20*"
+    },
+    "assign": {
+      "category": "membership",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*CHB-S/20*"
+    },
+    "assign": {
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*CHB/20*"
+    },
+    "assign": {
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*WOR/20*"
+    },
+    "assign": {
+      "collective": "weavingwolves"
+    }
+  },
+  {
+    "match": {
+      "description": "*open letter*"
+    },
+    "assign": {
+      "category": "donation",
+      "collective": "openletter"
+    }
+  },
+  {
+    "match": {
+      "description": "*Financial contribution*",
+      "provider": "stripe",
+      "direction": "in"
+    },
+    "assign": {
+      "category": "sponsoring"
+    }
+  },
+  {
+    "match": {
+      "counterparty": "*partena*"
+    },
+    "assign": {
+      "category": "HR",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*IDG*"
+    },
+    "assign": {
+      "collective": "IDG"
+    }
+  },
+  {
+    "match": {
+      "description": "*genesis*"
+    },
+    "assign": {
+      "collective": "genesis"
+    }
+  },
+  {
+    "match": {
+      "description": "*daobrussels*"
+    },
+    "assign": {
+      "collective": "daobrussels"
+    }
+  },
+  {
+    "match": {
+      "description": "*commonlibrary*"
+    },
+    "assign": {
+      "collective": "commonlibrary"
+    }
+  },
+  {
+    "match": {
+      "description": "*consulting*"
+    },
+    "assign": {
+      "category": "consulting"
+    }
+  },
+  {
+    "match": {
+      "description": "*catering*"
+    },
+    "assign": {
+      "category": "catering",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*reservation*"
+    },
+    "assign": {
+      "category": "rental"
+    }
+  },
+  {
+    "match": {
+      "description": "*booking*"
+    },
+    "assign": {
+      "category": "rental"
+    }
+  },
+  {
+    "match": {
+      "description": "*renting*"
+    },
+    "assign": {
+      "category": "rental"
+    }
+  },
+  {
+    "match": {
+      "description": "*elinor*"
+    },
+    "assign": {
+      "category": "rental"
+    }
+  },
+  {
+    "match": {
+      "description": "*ostrom*"
+    },
+    "assign": {
+      "category": "rental"
+    }
+  },
+  {
+    "match": {
+      "description": "*satoshi*"
+    },
+    "assign": {
+      "category": "rental"
+    }
+  },
+  {
+    "match": {
+      "description": "*angel*"
+    },
+    "assign": {
+      "category": "rental"
+    }
+  },
+  {
+    "match": {
+      "description": "*CHB*"
+    },
+    "assign": {
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "amount": 220,
+      "direction": "in",
+      "uncategorized": true
+    },
+    "assign": {
+      "category": "coworking",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "collective": "genesis",
+      "amount_min": 1000.01,
+      "direction": "in"
+    },
+    "assign": {
+      "category": "donation"
+    }
+  },
+  {
+    "match": {
+      "account": "eoa-polygon",
+      "amount_max": 999.99,
+      "direction": "in",
+      "uncategorized": true
+    },
+    "assign": {
+      "category": "donation",
+      "collective": "citizenwallet"
+    }
+  },
+  {
+    "match": {
+      "account": "eoa-polygon",
+      "amount_min": 1000,
+      "direction": "in",
+      "uncategorized": true
+    },
+    "assign": {
+      "category": "grant",
+      "collective": "citizenwallet"
+    }
+  },
+  {
+    "match": {
+      "account": "citizen-wallet",
+      "direction": "in"
+    },
+    "assign": {
+      "category": "grant",
+      "collective": "citizenwallet"
+    }
+  },
+  {
+    "match": {
+      "account": "citizen-wallet"
+    },
+    "assign": {
+      "collective": "citizenwallet"
+    }
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "product": "Brussels Pay",
+      "uncategorized": true
+    },
+    "assign": {
+      "category": "debt",
+      "collective": "brusselspay"
+    }
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "product": "EURb",
+      "uncategorized": true
+    },
+    "assign": {
+      "category": "debt",
+      "collective": "eurb"
+    }
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "product": "Zinne",
+      "uncategorized": true
+    },
+    "assign": {
+      "category": "debt",
+      "collective": "zinne"
+    }
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "product": "BREAD",
+      "uncategorized": true
+    },
+    "assign": {
+      "category": "debt",
+      "collective": "bread"
+    }
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "amount": 5,
+      "direction": "in",
+      "uncategorized": true,
+      "before": "2025-03-01"
+    },
+    "assign": {
+      "category": "debt",
+      "collective": "eurb"
+    }
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "amount": 10,
+      "direction": "in",
+      "uncategorized": true,
+      "before": "2025-03-01"
+    },
+    "assign": {
+      "category": "debt",
+      "collective": "eurb"
+    }
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "amount": 20,
+      "direction": "in",
+      "uncategorized": true,
+      "before": "2025-03-01"
+    },
+    "assign": {
+      "category": "debt",
+      "collective": "eurb"
+    }
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "amount": 25,
+      "direction": "in",
+      "uncategorized": true,
+      "before": "2025-03-01"
+    },
+    "assign": {
+      "category": "debt",
+      "collective": "eurb"
+    }
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "amount": 50,
+      "direction": "in",
+      "uncategorized": true,
+      "before": "2025-03-01"
+    },
+    "assign": {
+      "category": "debt",
+      "collective": "eurb"
+    }
+  },
+  {
+    "match": {},
+    "assign": {
+      "collective": "commonshub"
+    }
+  },
+  {
     "target": "invoice",
     "match": {
       "description": "Shifter*",
@@ -237,8 +1042,8 @@
   {
     "target": "invoice",
     "match": {
-      "title": "*OSV/20*",
-      "amount_min": 500
+      "amount_min": 500,
+      "title": "*OSV/20*"
     },
     "assign": {
       "category": "sponsoring",
@@ -394,6 +1199,15 @@
     }
   },
   {
+    "match": {
+      "description": "*CP-ORDER-*"
+    },
+    "assign": {
+      "category": "drinks",
+      "collective": "commonshub"
+    }
+  },
+  {
     "target": "invoice",
     "match": {
       "description": "*ticket*"
@@ -483,15 +1297,6 @@
       "category": "coworking",
       "collective": "commonshub",
       "override": true
-    }
-  },
-  {
-    "match": {
-      "description": "*CP-ORDER-*"
-    },
-    "assign": {
-      "category": "drinks",
-      "collective": "commonshub"
     }
   }
 ]
