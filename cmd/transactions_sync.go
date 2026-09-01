@@ -58,6 +58,29 @@ func mergeFetchedChargesIntoMonth(dataDir, year, month string, fetched map[strin
 	return merged, mergedRefunds, added
 }
 
+// mergeFetchedCustomersIntoMonth overlays this run's customer PII onto whatever
+// the month already holds on disk. Same reason as mergeFetchedChargesIntoMonth:
+// an incremental pull only fetches NEW balance transactions, so rebuilding the
+// month from this run's transactions alone would drop the PII archived by every
+// earlier run.
+func mergeFetchedCustomersIntoMonth(dataDir, year, month string, fetched map[string]*stripesource.CustomerPII) (map[string]*stripesource.CustomerPII, int) {
+	merged := stripesource.LoadCustomerData(dataDir, year, month)
+	if merged == nil {
+		merged = map[string]*stripesource.CustomerPII{}
+	}
+	added := 0
+	for id, pii := range fetched {
+		if pii == nil {
+			continue
+		}
+		if _, had := merged[id]; !had {
+			added++
+		}
+		merged[id] = pii
+	}
+	return merged, added
+}
+
 func TransactionsSync(args []string) (int, error) {
 	startedAt := time.Now()
 	if HasFlag(args, "--help", "-h", "help") {
@@ -400,10 +423,7 @@ func TransactionsSync(args []string) (int, error) {
 					// same-month BTs from a partial incremental run. Let the normal
 					// backward fetch below compare/merge month contents instead.
 					if !force {
-						relPathFn := func(year, month string) string {
-							return stripesource.RelPath(stripesource.BalanceTransactionsFile)
-						}
-						if allMonthsCached(DataDir(), startMonth, endMonth, relPathFn) {
+						if allStripeMonthsCached(DataDir(), startMonth, endMonth) {
 							if !monthRangeIncludes(time.Now().In(BrusselsTZ()).Format("2006-01"), startMonth, endMonth) {
 								fmt.Printf("  %sAll requested Stripe provider files are already cached%s\n", Fmt.Dim, Fmt.Reset)
 								continue
@@ -469,7 +489,7 @@ func TransactionsSync(args []string) (int, error) {
 						dataDir := DataDir()
 						filePath := stripesource.TransactionCachePath(dataDir, year, month)
 
-						if force || ym == fmt.Sprintf("%d-%02d", now.Year(), now.Month()) || !fileExists(filePath) {
+						if force || ym == fmt.Sprintf("%d-%02d", now.Year(), now.Month()) || !stripeMonthProviderFilesCached(dataDir, year, month) {
 							monthsToUpdate[ym] = true
 							continue
 						}
@@ -608,46 +628,52 @@ func TransactionsSync(args []string) (int, error) {
 								}
 							}
 							monthCharges, monthRefunds, added := mergeFetchedChargesIntoMonth(DataDir(), parts[0], parts[1], fetched, refundToCharge)
-							if len(monthCharges) > 0 {
-								relPath := stripesource.RelPath(stripesource.ChargesFile)
-								status.Update("Writing %s...", displayMonthRelPath(parts[0], parts[1], relPath))
-								_ = stripesource.SaveChargeData(DataDir(), parts[0], parts[1], monthCharges, monthRefunds)
-								status.Clear()
-								printMonthHeadingOnce(ym, printedMonths)
-								fmt.Printf("  %s✓%s %s (%d charges, +%d new)\n", Fmt.Green, Fmt.Reset, filepath.ToSlash(relPath), len(monthCharges), added)
-							}
+							// Written even when the month has no charges at all (a
+							// payouts-only month): the archive is only "complete" for
+							// stripeMonthProviderFilesCached once the file exists, and
+							// without it every later run re-fetches the month forever.
+							// Safe to write empty because the merge above already
+							// carries everything that was on disk.
+							relPath := stripesource.RelPath(stripesource.ChargesFile)
+							status.Update("Writing %s...", displayMonthRelPath(parts[0], parts[1], relPath))
+							_ = stripesource.SaveChargeData(DataDir(), parts[0], parts[1], monthCharges, monthRefunds)
+							status.Clear()
+							printMonthHeadingOnce(ym, printedMonths)
+							fmt.Printf("  %s✓%s %s (%d charges, +%d new)\n", Fmt.Green, Fmt.Reset, filepath.ToSlash(relPath), len(monthCharges), added)
 						}
 
 						// Save per-month private customer data from enriched charges.
 						for _, ym := range updatedMonths {
-							monthTxs := byMonth[ym]
-							customers := &stripesource.CustomerData{
-								FetchedAt: time.Now().UTC().Format(time.RFC3339),
-								Customers: map[string]*stripesource.CustomerPII{},
+							parts := strings.Split(ym, "-")
+							if len(parts) != 2 {
+								continue
 							}
-							for _, tx := range monthTxs {
+							fetchedPII := map[string]*stripesource.CustomerPII{}
+							for _, tx := range byMonth[ym] {
 								chID := chargeByTxn[tx.ID]
 								if ch, ok := charges[chID]; ok {
 									name := ch.BestName()
 									email := ch.BestEmail()
 									if name != "" || email != "" {
-										customers.Customers[tx.ID] = &stripesource.CustomerPII{Name: name, Email: email}
+										fetchedPII[tx.ID] = &stripesource.CustomerPII{Name: name, Email: email}
 									}
 								} else if tx.CustomerName != "" || tx.CustomerEmail != "" {
-									customers.Customers[tx.ID] = &stripesource.CustomerPII{Name: tx.CustomerName, Email: tx.CustomerEmail}
+									fetchedPII[tx.ID] = &stripesource.CustomerPII{Name: tx.CustomerName, Email: tx.CustomerEmail}
 								}
 							}
-							if len(customers.Customers) > 0 {
-								parts := strings.Split(ym, "-")
-								if len(parts) == 2 {
-									relPath := stripesource.RelPath(stripesource.CustomersFile)
-									status.Update("Writing %s...", displayMonthRelPath(parts[0], parts[1], relPath))
-									_ = stripesource.WriteJSON(DataDir(), parts[0], parts[1], customers, stripesource.CustomersFile)
-									status.Clear()
-									printMonthHeadingOnce(ym, printedMonths)
-									fmt.Printf("  %s✓%s %s (%d customers)\n", Fmt.Green, Fmt.Reset, filepath.ToSlash(relPath), len(customers.Customers))
-								}
+							merged, added := mergeFetchedCustomersIntoMonth(DataDir(), parts[0], parts[1], fetchedPII)
+							customers := &stripesource.CustomerData{
+								FetchedAt: time.Now().UTC().Format(time.RFC3339),
+								Customers: merged,
 							}
+							// Written even when the month has no customer PII, for the
+							// same archive-completeness reason as charges.json above.
+							relPath := stripesource.RelPath(stripesource.CustomersFile)
+							status.Update("Writing %s...", displayMonthRelPath(parts[0], parts[1], relPath))
+							_ = stripesource.WriteJSON(DataDir(), parts[0], parts[1], customers, stripesource.CustomersFile)
+							status.Clear()
+							printMonthHeadingOnce(ym, printedMonths)
+							fmt.Printf("  %s✓%s %s (%d customers, +%d new)\n", Fmt.Green, Fmt.Reset, filepath.ToSlash(relPath), len(customers.Customers), added)
 						}
 					}
 					status.Clear()
@@ -1206,6 +1232,45 @@ func etherscanAccount(acc FinanceAccount) etherscansource.Account {
 		out.TokenDecimals = acc.Token.Decimals
 	}
 	return out
+}
+
+// allStripeMonthsCached reports whether every month in [startMonth, endMonth]
+// holds a complete Stripe provider archive. "Complete" means all three
+// current-format files, not just balance-transactions.json: a month archived
+// before charges.json/customers.json existed still has the balance
+// transactions, and checking only those would declare it cached and never
+// backfill the rest.
+func allStripeMonthsCached(dataDir, startMonth, endMonth string) bool {
+	months := expandMonthRange(startMonth, endMonth)
+	if len(months) == 0 {
+		return false
+	}
+	for _, ym := range months {
+		parts := strings.Split(ym, "-")
+		if len(parts) != 2 {
+			return false
+		}
+		if !stripeMonthProviderFilesCached(dataDir, parts[0], parts[1]) {
+			return false
+		}
+	}
+	return true
+}
+
+// stripeMonthProviderFilesCached reports whether one month has every Stripe
+// provider file on disk. The files are written even when empty, so presence —
+// not content — is what marks the month done.
+func stripeMonthProviderFilesCached(dataDir, year, month string) bool {
+	for _, name := range []string{
+		stripesource.BalanceTransactionsFile,
+		stripesource.ChargesFile,
+		stripesource.CustomersFile,
+	} {
+		if !fileExists(stripesource.Path(dataDir, year, month, name)) {
+			return false
+		}
+	}
+	return true
 }
 
 // allMonthsCached checks if every month in the range [startMonth, endMonth] has a cached file.
