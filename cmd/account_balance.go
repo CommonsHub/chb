@@ -50,6 +50,14 @@ func AccountBalance(slug string, args []string) error {
 	fmt.Printf("\n%s%s — %s%s\n", Fmt.Bold, acc.Slug, acc.Name, Fmt.Reset)
 	fmt.Printf("  %sBalance at end of %s:%s %s%s %s\n",
 		Fmt.Dim, scope, Fmt.Reset, signPrefix(balance), fmtNumber(math.Abs(balance)), currency)
+	if opening, ok := acc.OpeningBalanceAt(cutoff); ok {
+		asOf := "the start of the archive"
+		if t, dated := acc.OpeningBalanceAsOfTime(); dated {
+			asOf = t.Format("2006-01-02")
+		}
+		fmt.Printf("  %sOpening balance at %s:%s %s%s %s\n",
+			Fmt.Dim, asOf, Fmt.Reset, signPrefix(opening), fmtNumber(math.Abs(opening)), currency)
+	}
 	fmt.Printf("  %sBased on %s",
 		Fmt.Dim, Pluralize(counted, "local transaction", ""))
 	if latest.Unix() > 0 {
@@ -63,8 +71,84 @@ func AccountBalance(slug string, args []string) error {
 	if HasFlag(args, "--onchain") {
 		printOnchainComparison(acc, cutoff, balance, currency)
 	}
+	if HasFlag(args, "--derive-opening") {
+		printDerivedOpeningBalance(acc, currency)
+	}
 	fmt.Println()
 	return nil
+}
+
+// printDerivedOpeningBalance works backwards from the account's live balance to
+// the opening balance that would reconcile it with chb's archive: whatever the
+// account already held before the earliest transaction chb recorded. It only
+// reports the figure — the value belongs in accounts.json, which is a
+// deliberate, reviewable decision rather than something a balance query should
+// write on its own.
+func printDerivedOpeningBalance(acc *AccountConfig, currency string) {
+	live, key, err := refreshAccountBalance(acc)
+	if err != nil {
+		Warnf("  %s⚠ cannot derive an opening balance: %v%s", Fmt.Yellow, err, Fmt.Reset)
+		return
+	}
+	if key == "" {
+		Warnf("  %s⚠ cannot derive an opening balance: %s has no live balance source%s",
+			Fmt.Yellow, acc.Slug, Fmt.Reset)
+		return
+	}
+
+	// Everything chb has archived, with any configured opening removed — the
+	// derivation must not build on the number it is deriving.
+	now := time.Now().In(BrusselsTZ())
+	booked, counted, _, _ := accountBalanceAtCutoff(acc, endOfDay(now))
+	if opening, ok := acc.OpeningBalanceAt(endOfDay(now)); ok {
+		booked = roundCents(booked - opening)
+	}
+	implied := roundCents(live - booked)
+	asOf := earliestAccountTransaction(acc)
+
+	fmt.Printf("\n  %sDeriving the opening balance%s\n", Fmt.Bold, Fmt.Reset)
+	fmt.Printf("    %sLive balance:%s        %s%s %s\n",
+		Fmt.Dim, Fmt.Reset, signPrefix(live), fmtNumber(math.Abs(live)), currency)
+	fmt.Printf("    %sBooked in archive:%s   %s%s %s  %s(%s",
+		Fmt.Dim, Fmt.Reset, signPrefix(booked), fmtNumber(math.Abs(booked)), currency,
+		Fmt.Dim, Pluralize(counted, "tx", ""))
+	if !asOf.IsZero() {
+		fmt.Printf(", earliest %s", asOf.Format("2006-01-02"))
+	}
+	fmt.Printf(")%s\n", Fmt.Reset)
+	fmt.Printf("    %s→ openingBalance:%s    %s%s%s %s %s\n",
+		Fmt.Dim, Fmt.Reset, Fmt.Bold, signPrefix(implied), fmtNumber(math.Abs(implied)), currency, Fmt.Reset)
+
+	if counted == 0 {
+		fmt.Printf("    %sNo local transactions — this is just the live balance, not a derivation.%s\n", Fmt.Dim, Fmt.Reset)
+		return
+	}
+	// The live balance is current; the archive is only as current as the last
+	// pull. Anything that happened since lands in the live figure alone and is
+	// silently absorbed into the opening balance, which would then be wrong by
+	// exactly that amount — and wrong permanently, since it gets written down.
+	fmt.Printf("\n    %s⚠ Pull the account first: activity newer than the archive is%s\n", Fmt.Yellow, Fmt.Reset)
+	fmt.Printf("    %s  counted into this figure instead of being booked.%s\n", Fmt.Yellow, Fmt.Reset)
+	fmt.Printf("\n    %sAdd to this account in accounts.json (the shipped default —%s\n", Fmt.Dim, Fmt.Reset)
+	fmt.Printf("    %sa local-only edit is overwritten on the next run):%s\n", Fmt.Dim, Fmt.Reset)
+	fmt.Printf("      %s\"openingBalance\": %.2f,%s\n", Fmt.Cyan, implied, Fmt.Reset)
+	if !asOf.IsZero() {
+		fmt.Printf("      %s\"openingBalanceAsOf\": \"%s\"%s\n", Fmt.Cyan, asOf.Format("2006-01-02"), Fmt.Reset)
+	}
+}
+
+// earliestAccountTransaction returns the timestamp of the oldest transaction
+// chb holds for the account — the point its archive begins, and so the date an
+// opening balance is measured at. Zero when there are none.
+func earliestAccountTransaction(acc *AccountConfig) time.Time {
+	var earliest time.Time
+	for _, tx := range loadAccountTransactionsForOdoo(acc) {
+		t := time.Unix(tx.Timestamp, 0).In(BrusselsTZ())
+		if earliest.IsZero() || t.Before(earliest) {
+			earliest = t
+		}
+	}
+	return earliest
 }
 
 // printOnchainComparison reads the account's balance from the chain at the same
@@ -108,7 +192,14 @@ func printOnchainComparison(acc *AccountConfig, cutoff time.Time, local float64,
 // transactions up to and including the cutoff. It returns the rounded balance,
 // the number of transactions counted, the number ignored after the cutoff, and
 // the timestamp of the latest counted transaction.
+//
+// A configured opening balance seeds the running total, so an account whose
+// archive starts partway through its life reports what it actually holds
+// rather than the movement chb happens to have recorded.
 func accountBalanceAtCutoff(acc *AccountConfig, cutoff time.Time) (balance float64, counted, future int, latest time.Time) {
+	if opening, ok := acc.OpeningBalanceAt(cutoff); ok {
+		balance = opening
+	}
 	for _, tx := range loadAccountTransactionsForOdoo(acc) {
 		t := time.Unix(tx.Timestamp, 0)
 		if t.After(cutoff) {
@@ -370,6 +461,8 @@ func printAccountBalanceHelp() {
 %sOPTIONS%s
   %s--onchain%s            Also read the balance from the chain at the same
                        cutoff and show the difference (etherscan accounts)
+  %s--derive-opening%s     Work backwards from the live balance to the opening
+                       balance that would reconcile it with the archive
   %s--help, -h%s           Show this help
 
 %sON-CHAIN READINGS%s
@@ -377,6 +470,12 @@ func printAccountBalanceHelp() {
   block. Etherscan serves historical balances only to API Pro keys, so a
   free key falls back to an archive-node %seth_call%s — public RPCs keep
   recent history and prune older state.
+
+%sOPENING BALANCE%s
+  An account whose archive starts partway through its life is short by
+  whatever it already held. Set %sopeningBalance%s (and %sopeningBalanceAsOf%s)
+  on the account to seed the running total; %s--derive-opening%s computes the
+  figure from the live balance.
 `,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
@@ -390,8 +489,11 @@ func printAccountBalanceHelp() {
 		f.Bold, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
 		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 	)
 }
 

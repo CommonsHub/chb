@@ -33,7 +33,20 @@ type AccountConfig struct {
 	OdooSourceOfTruth bool   `json:"odooSourceOfTruth,omitempty"` // true when Odoo journal lines are authoritative and CHB must not push local txs into it
 	OdooSyncSince     string `json:"odooSyncSince,omitempty"`     // journal starts at this date (YYYY-MM-DD) with a manual opening-balance entry; CHB owns only lines from this date on
 	ArchivedAt        string `json:"archivedAt,omitempty"`        // date after which the account is no longer active (YYYY-MM-DD)
-	Token             *struct {
+	// OpeningBalance is what the account already held immediately before the
+	// earliest transaction chb has archived. Without it a balance is a running
+	// total from chb's first recorded transaction, which is wrong by whatever
+	// the account was already carrying — Stripe's local history starts in
+	// 2026-07 but the account did not start empty. A pointer so an explicit
+	// 0 ("verified empty at the cutoff") is distinguishable from unset
+	// ("unknown, don't adjust").
+	OpeningBalance *float64 `json:"openingBalance,omitempty"`
+	// OpeningBalanceAsOf dates the opening balance (YYYY-MM-DD): it is the
+	// balance as the day began, before anything chb archived on or after it.
+	// Balances asked for an earlier cutoff do not apply it — chb has no basis
+	// to claim what the account held before this point.
+	OpeningBalanceAsOf string `json:"openingBalanceAsOf,omitempty"`
+	Token              *struct {
 		Address  string `json:"address"`
 		Name     string `json:"name"`
 		Symbol   string `json:"symbol"`
@@ -99,6 +112,34 @@ func (a *AccountConfig) OdooSyncSinceTime() (time.Time, bool) {
 		return time.Time{}, false
 	}
 	t, err := time.ParseInLocation("2006-01-02", a.OdooSyncSince, BrusselsTZ())
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// OpeningBalanceAt returns the configured opening balance to seed a running
+// total that ends at cutoff, and whether one applies. An opening balance dated
+// after the cutoff does not apply: chb cannot say what the account held before
+// the point its own history begins.
+func (a *AccountConfig) OpeningBalanceAt(cutoff time.Time) (float64, bool) {
+	if a == nil || a.OpeningBalance == nil {
+		return 0, false
+	}
+	if asOf, ok := a.OpeningBalanceAsOfTime(); ok && cutoff.Before(asOf) {
+		return 0, false
+	}
+	return *a.OpeningBalance, true
+}
+
+// OpeningBalanceAsOfTime parses openingBalanceAsOf as the start of that day in
+// Brussels. Returns ok=false when unset or malformed, in which case the
+// opening balance applies to every cutoff.
+func (a *AccountConfig) OpeningBalanceAsOfTime() (time.Time, bool) {
+	if a == nil || a.OpeningBalanceAsOf == "" {
+		return time.Time{}, false
+	}
+	t, err := time.ParseInLocation("2006-01-02", a.OpeningBalanceAsOf, BrusselsTZ())
 	if err != nil {
 		return time.Time{}, false
 	}
