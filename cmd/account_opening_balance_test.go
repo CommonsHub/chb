@@ -111,3 +111,68 @@ func TestStripeDefaultCarriesOpeningBalance(t *testing.T) {
 		t.Fatalf("stripe openingBalanceAsOf %q does not parse", stripe.OpeningBalanceAsOf)
 	}
 }
+
+// The Odoo starting-balance plan compares the journal's manual opening entry
+// against what chb computes for the period before the cutoff. When the local
+// archive does not reach back that far — chb's Stripe history starts in 2025,
+// the account is older — that computation is only correct if it counts the
+// configured opening balance. Without it the plan reads 0.00, decides the
+// journal's correct opening entry is wrong, and plans to rewrite it to zero.
+func TestStartingBalancePlanKeepsOpeningEntryWhenArchiveStartsAtCutoff(t *testing.T) {
+	cutoff := time.Date(2025, 1, 1, 0, 0, 0, 0, BrusselsTZ())
+	acc := &AccountConfig{
+		Slug:               "stripe",
+		Provider:           "stripe",
+		Currency:           "EUR",
+		OdooJournalID:      48,
+		OdooSyncSince:      "2025-01-01",
+		OpeningBalance:     floatOf(9326.90),
+		OpeningBalanceAsOf: "2025-01-01",
+	}
+	// The journal's manual opening entry: no uniqueImportId, so chb does not
+	// own it. Nothing else is dated before the cutoff.
+	lines := []OdooCacheLine{
+		{ID: 31159, Date: "2025-01-01", PaymentRef: "Solde de départ 2025-01-01", Amount: 9326.90},
+		{ID: 31160, Date: "2025-01-02", UniqueImportID: "stripe-txn_1", Amount: 12.34},
+	}
+
+	plan := planStartingBalanceConvergence(acc, cutoff, lines)
+
+	if plan.ExpectedOpening != 9326.90 {
+		t.Fatalf("ExpectedOpening = %.2f, want 9326.90 — the configured opening balance was not counted", plan.ExpectedOpening)
+	}
+	if plan.OpeningAction != "ok" {
+		t.Fatalf("OpeningAction = %q, want \"ok\" — the plan would rewrite a correct opening entry", plan.OpeningAction)
+	}
+	if plan.hasChanges() {
+		t.Fatalf("plan reports changes against an already-correct journal: %+v", plan.DeleteLines)
+	}
+}
+
+// An account with no configured opening balance keeps the old behaviour: the
+// balance before the cutoff is whatever the archive holds.
+func TestStartingBalancePlanUnaffectedWithoutOpeningBalance(t *testing.T) {
+	cutoff := time.Date(2025, 1, 1, 0, 0, 0, 0, BrusselsTZ())
+	acc := &AccountConfig{Slug: "x", Provider: "stripe", OdooSyncSince: "2025-01-01"}
+	if got := accountLocalBalanceBefore(acc, cutoff); got != 0 {
+		t.Fatalf("accountLocalBalanceBefore = %.2f, want 0 for an account with no opening balance", got)
+	}
+}
+
+// The local snapshot is compared against a journal balance that includes the
+// journal's own opening entry, so it has to start from the same position.
+func TestLocalOdooSnapshotIncludesOpeningBalance(t *testing.T) {
+	acc := &AccountConfig{
+		Slug:               "stripe",
+		Currency:           "EUR",
+		OpeningBalance:     floatOf(9326.90),
+		OpeningBalanceAsOf: "2025-01-01",
+	}
+	snap := accountLocalOdooSnapshot(acc, nil)
+	if snap.Balance != 9326.90 {
+		t.Fatalf("snapshot balance = %.2f, want 9326.90 with no transactions", snap.Balance)
+	}
+	if snap.TxCount != 0 {
+		t.Fatalf("TxCount = %d, want 0 — the opening balance is not a transaction", snap.TxCount)
+	}
+}

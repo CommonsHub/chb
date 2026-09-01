@@ -586,6 +586,7 @@ func computeAccountTotals(acc *AccountConfig) *accountTotals {
 	if acc == nil {
 		return nil
 	}
+	var totals *accountTotals
 	if acc.Provider == "stripe" {
 		txs, err := stripesource.LoadTransactions(DataDir(), acc.AccountID)
 		if err == nil && len(txs) > 0 {
@@ -593,10 +594,31 @@ func computeAccountTotals(acc *AccountConfig) *accountTotals {
 			if currency == "" {
 				currency = "EUR"
 			}
-			return accountTotalsFromStripeTransactions(txs, currency)
+			totals = accountTotalsFromStripeTransactions(txs, currency)
 		}
 	}
-	return accountTotalsFromGeneratedTransactions(acc, loadAccountTransactionsWithOptions(acc, true))
+	if totals == nil {
+		totals = accountTotalsFromGeneratedTransactions(acc, loadAccountTransactionsWithOptions(acc, true))
+	}
+	applyOpeningBalanceToTotals(acc, totals)
+	return totals
+}
+
+// applyOpeningBalanceToTotals seeds the running balance with what the account
+// already held before its earliest archived transaction. Only CurrentBalance
+// moves: the opening is a starting position, not money that flowed in or out
+// during the period, so In/Out and the fee breakdowns are left alone.
+//
+// Every local-balance view runs through here, which is what keeps them
+// consistent with `chb accounts <slug> balance` — and with the Odoo journal,
+// whose own opening entry the balance is compared against.
+func applyOpeningBalanceToTotals(acc *AccountConfig, totals *accountTotals) {
+	if totals == nil {
+		return
+	}
+	if opening, ok := acc.OpeningBalanceAt(time.Now().In(BrusselsTZ())); ok {
+		totals.CurrentBalance = roundCents(totals.CurrentBalance + opening)
+	}
 }
 
 func accountTotalsFromStripeTransactions(txs []stripesource.Transaction, currency string) *accountTotals {
@@ -3740,6 +3762,12 @@ func accountLocalOdooSnapshot(acc *AccountConfig, txs []TransactionEntry) accoun
 		Label:    "Local files",
 		Currency: accCurrency(acc),
 	}
+	// The journal this is compared against carries its own opening entry as a
+	// line, so the local side has to start from the same position or the two
+	// differ by the whole opening balance and the comparison says nothing.
+	if opening, ok := acc.OpeningBalanceAt(time.Now().In(BrusselsTZ())); ok {
+		snap.Balance = opening
+	}
 	for _, tx := range txs {
 		snap.TxCount++
 		snap.Balance += signedOdooAmountForTransaction(acc, tx)
@@ -3867,10 +3895,23 @@ func accountLocalBalanceBefore(acc *AccountConfig, cutoff time.Time) float64 {
 	if acc == nil || cutoff.IsZero() {
 		return 0
 	}
+	// Seed with the configured opening balance. The archive does not
+	// necessarily reach back past the cutoff — chb's Stripe history starts in
+	// 2025 while the account is older — and the opening balance is precisely
+	// what the account held before the archive begins. Leaving it out makes
+	// this report 0.00 for such an account, which would drive the Odoo
+	// starting-balance plan to rewrite a correct opening entry down to zero.
+	var opening float64
+	if v, ok := acc.OpeningBalanceAt(cutoff); ok {
+		opening = v
+	}
 	if acc.Provider == "stripe" {
 		bts, err := stripesource.LoadTransactionsSince(DataDir(), acc.AccountID, 0)
 		if err != nil {
-			return 0
+			// Unreadable archive is not evidence of a zero balance. Falling
+			// through to 0 here would drive the Odoo starting-balance plan to
+			// rewrite the journal's opening entry down to nothing.
+			return roundCents(opening)
 		}
 		var cents int64
 		for _, bt := range bts {
@@ -3878,9 +3919,9 @@ func accountLocalBalanceBefore(acc *AccountConfig, cutoff time.Time) float64 {
 				cents += bt.Net
 			}
 		}
-		return roundCents(centsToEuros(cents))
+		return roundCents(opening + centsToEuros(cents))
 	}
-	var sum float64
+	sum := opening
 	for _, tx := range loadAccountTransactionsForOdoo(acc) {
 		if tx.Timestamp < cutoff.Unix() {
 			sum += signedOdooAmountForTransaction(acc, tx)
