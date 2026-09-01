@@ -60,6 +60,14 @@ func ResetQuotaState() {
 	quotaBlocked = ""
 }
 
+// isProEndpointNotice detects the API's refusal to serve a Pro-only endpoint
+// ("Sorry, it looks like you are trying to access an API Pro endpoint"). It is
+// neither transient nor a malformed request: the call is correct, the key just
+// isn't entitled, so callers fall back to another source instead of retrying.
+func isProEndpointNotice(detail string) bool {
+	return strings.Contains(strings.ToLower(detail), "api pro endpoint")
+}
+
 // errorKind classifies an Etherscan API-level error (HTTP 200 with status "0").
 type errorKind int
 

@@ -13,6 +13,10 @@ import (
 )
 
 // redactAPIKey hides the apikey query value so URLs are safe to log.
+// APIBaseURL is the Etherscan V2 multichain endpoint. A variable so tests can
+// point the package at an httptest server.
+var APIBaseURL = "https://api.etherscan.io/v2/api"
+
 func redactAPIKey(url, apiKey string) string {
 	if apiKey == "" {
 		return url
@@ -46,7 +50,7 @@ func bodySnippet(body []byte) string {
 }
 
 func FetchTokenTransfers(acc Account, apiKey string) ([]TokenTransfer, error) {
-	baseURL := fmt.Sprintf("https://api.etherscan.io/v2/api?chainid=%d", acc.ChainID)
+	baseURL := fmt.Sprintf("%s?chainid=%d", APIBaseURL, acc.ChainID)
 
 	var url string
 	if acc.Address == "" || strings.EqualFold(acc.Address, acc.TokenAddress) {
@@ -144,7 +148,7 @@ func FetchTokenTransfers(acc Account, apiKey string) ([]TokenTransfer, error) {
 }
 
 func PeekLatest(acc Account, apiKey string) (string, error) {
-	baseURL := fmt.Sprintf("https://api.etherscan.io/v2/api?chainid=%d", acc.ChainID)
+	baseURL := fmt.Sprintf("%s?chainid=%d", APIBaseURL, acc.ChainID)
 	var url string
 	if acc.Address == "" || strings.EqualFold(acc.Address, acc.TokenAddress) {
 		url = fmt.Sprintf("%s&module=account&action=tokentx&contractaddress=%s&startblock=0&endblock=99999999&page=1&offset=1&sort=desc&apikey=%s",

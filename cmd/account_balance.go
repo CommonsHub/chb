@@ -58,8 +58,50 @@ func AccountBalance(slug string, args []string) error {
 	if future > 0 {
 		fmt.Printf(", %s ignored after the cutoff", Pluralize(future, "tx", ""))
 	}
-	fmt.Printf("%s\n\n", Fmt.Reset)
+	fmt.Printf("%s\n", Fmt.Reset)
+
+	if HasFlag(args, "--onchain") {
+		printOnchainComparison(acc, cutoff, balance, currency)
+	}
+	fmt.Println()
 	return nil
+}
+
+// printOnchainComparison reads the account's balance from the chain at the same
+// cutoff and reports the difference. This is the reconciliation question the
+// local figure cannot answer on its own: whether chb's archive actually
+// accounts for everything the wallet did.
+func printOnchainComparison(acc *AccountConfig, cutoff time.Time, local float64, currency string) {
+	reading, err := onchainBalanceAt(acc, cutoff)
+	if err != nil {
+		Warnf("  %s⚠ on-chain reading unavailable: %v%s", Fmt.Yellow, err, Fmt.Reset)
+		return
+	}
+
+	at := "latest"
+	if reading.Block != "latest" {
+		at = "block " + reading.Block
+	}
+	fmt.Printf("  %sOn-chain at %s:%s %s%s %s  %s(%s)%s\n",
+		Fmt.Dim, at, Fmt.Reset,
+		signPrefix(reading.Balance), fmtNumber(math.Abs(reading.Balance)), currency,
+		Fmt.Dim, reading.Source, Fmt.Reset)
+
+	diff := roundCents(reading.Balance - local)
+	if diff == 0 {
+		fmt.Printf("  %s✓ matches the local archive%s\n", Fmt.Green, Fmt.Reset)
+		return
+	}
+	fmt.Printf("  %s⚠ differs by %s%s %s — the local archive is missing or double-counting transactions%s\n",
+		Fmt.Yellow, signPrefix(diff), fmtNumber(math.Abs(diff)), currency, Fmt.Reset)
+
+	// A pruned node answers a query for state it no longer holds with a zero
+	// instead of an error, which would otherwise read as "the wallet was
+	// empty". Say so rather than letting the number stand unqualified.
+	if reading.Historical && reading.Balance == 0 && local != 0 && reading.Source != "etherscan" {
+		fmt.Printf("    %sA zero from %s may mean the node has pruned state that old rather than an empty wallet.%s\n",
+			Fmt.Dim, reading.Source, Fmt.Reset)
+	}
 }
 
 // accountBalanceAtCutoff sums the signed amounts of an account's locally-cached
@@ -326,7 +368,15 @@ func printAccountBalanceHelp() {
   • Accepts %sYYYY%s, %sYYYY/MM%s, %sYYYY/MM/DD%s (or %s-%s / %sYYYYMMDD%s).
 
 %sOPTIONS%s
+  %s--onchain%s            Also read the balance from the chain at the same
+                       cutoff and show the difference (etherscan accounts)
   %s--help, -h%s           Show this help
+
+%sON-CHAIN READINGS%s
+  A past date is resolved to the last block before it, then read at that
+  block. Etherscan serves historical balances only to API Pro keys, so a
+  free key falls back to an archive-node %seth_call%s — public RPCs keep
+  recent history and prune older state.
 `,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
@@ -339,6 +389,9 @@ func printAccountBalanceHelp() {
 		f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset,
 		f.Bold, f.Reset,
 		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
 	)
 }
 

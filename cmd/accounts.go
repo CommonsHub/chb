@@ -146,35 +146,32 @@ func fetchTokenBalance(chainID int, tokenAddress, walletAddress string, decimals
 	return fetchTokenBalanceFromRPC(rpcURL, tokenAddress, walletAddress, decimals)
 }
 
+// fetchTokenBalanceFromEtherscan reads the current balance through the
+// etherscan provider package, so it shares the transfer sync's throttle, retry
+// and daily-quota handling instead of firing an unguarded request of its own.
 func fetchTokenBalanceFromEtherscan(chainID int, tokenAddress, walletAddress string, decimals int, apiKey string) (float64, error) {
-	url := fmt.Sprintf("https://api.etherscan.io/v2/api?chainid=%d&module=account&action=tokenbalance&contractaddress=%s&address=%s&tag=latest&apikey=%s",
-		chainID, tokenAddress, walletAddress, apiKey)
-
-	resp, err := http.Get(url)
+	raw, err := etherscansource.TokenBalance(chainID, tokenAddress, walletAddress, apiKey)
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Status  string `json:"status"`
-		Message string `json:"message"`
-		Result  string `json:"result"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, err
-	}
-	if result.Status != "1" {
-		return 0, fmt.Errorf("etherscan: %s", result.Message)
-	}
-
-	return rawTokenBalanceToFloat(result.Result, decimals)
+	return rawTokenBalanceToFloat(raw, decimals)
 }
 
 func fetchTokenBalanceFromRPC(rpcURL, tokenAddress, walletAddress string, decimals int) (float64, error) {
+	return fetchTokenBalanceFromRPCAtBlock(rpcURL, tokenAddress, walletAddress, "latest", decimals)
+}
+
+// fetchTokenBalanceFromRPCAtBlock runs balanceOf at a specific block tag
+// ("latest", or a 0x-prefixed block number). Historical tags need a node that
+// still holds state for that block — public RPCs keep recent history and prune
+// older state, so a deep query can come back as a zero rather than an error.
+func fetchTokenBalanceFromRPCAtBlock(rpcURL, tokenAddress, walletAddress, blockTag string, decimals int) (float64, error) {
 	calldata, err := erc20BalanceOfCalldata(walletAddress)
 	if err != nil {
 		return 0, err
+	}
+	if blockTag == "" {
+		blockTag = "latest"
 	}
 	payload := map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -185,7 +182,7 @@ func fetchTokenBalanceFromRPC(rpcURL, tokenAddress, walletAddress string, decima
 				"to":   tokenAddress,
 				"data": calldata,
 			},
-			"latest",
+			blockTag,
 		},
 	}
 	body, _ := json.Marshal(payload)
@@ -7753,6 +7750,7 @@ func printAccountsHelp() {
   %schb accounts <slug> link%s              Link account to an Odoo bank journal
   %schb accounts balance [YYYY[/MM[/DD]]]%s          All accounts + total at end of period
   %schb accounts <slug> balance [YYYY[/MM[/DD]]]%s   Historical balance at end of period
+  %schb accounts <slug> balance <date> --onchain%s   …and compare it against the chain
   %schb accounts <slug> payouts%s           List Stripe payouts
   %schb accounts internal%s                 Audit internal-transfer legs (must net to zero)
 
@@ -7765,10 +7763,11 @@ func printAccountsHelp() {
 `,
 		f.Bold, f.Reset, // title
 		f.Bold, f.Reset, // USAGE
-		// 14 USAGE rows
+		// 15 USAGE rows
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
 		f.Bold, f.Reset, // Note word
 		f.Bold, f.Reset, // ENVIRONMENT
 		f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset,
