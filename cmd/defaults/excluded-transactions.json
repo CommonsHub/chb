@@ -35,6 +35,13 @@
       "to": "0x6fdf0aae33e313d9c98d2aa19bcd8ef777912cbf",
       "amount": 197.81,
       "reason": "EURe V1->V2 migration mint (Polygon) for Monerium savings; legacy balance already counted (was double-counting → 2x)."
+    },
+    {
+      "chain": "polygon",
+      "hash": "0xa5524ff7537a4ef263888d2fbcc9d0923fe970e4f359acb8117389e73a7169cf",
+      "to": "0x00952d1747a1a3c803f30534bff11348a7d40651",
+      "amount": 5312.73,
+      "reason": "EURe V1->V2 migration mint (Polygon) for Citizen Wallet; legacy balance already counted (the wallet's 15 legacy-contract transfers of 2024-05-30/31 net to exactly this amount)."
     }
   ]
 }
