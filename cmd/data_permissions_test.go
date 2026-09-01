@@ -257,3 +257,54 @@ func TestApplyDataPathPolicyTolerantOfPermissionErrors(t *testing.T) {
 		t.Fatalf("applyDataPathPolicy returned %v, want nil for a refused chmod", err)
 	}
 }
+
+// "restricted" is served — to the member it belongs to, once signed in —
+// while "private" is served to nobody. They differ in who may read them, not
+// in how they are stored: both stay out of public output, out of the PII
+// scrubber, and behind a 0700 directory.
+func TestRestrictedTreeIsTreatedAsNonPublic(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.Chmod(dataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+
+	path := filepath.Join(DataDir(), "latest", "generated", "restricted", "members", "abc.json")
+	// A name that looks like an email is exactly what the guard scrubs from
+	// public files; a restricted file must keep it.
+	payload := []byte(`{"firstName":"ada@example.org"}`)
+	if err := writeDataFile(path, payload); err != nil {
+		t.Fatalf("write restricted file: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("restricted file was scrubbed: %s", got)
+	}
+	assertMode(t, filepath.Join(dataDir, "latest", "generated", "restricted"), 0700)
+	assertMode(t, filepath.Dir(path), 0700)
+}
+
+func TestPathSegmentClassification(t *testing.T) {
+	restricted := filepath.Join("latest", "generated", "restricted", "members", "x.json")
+	private := filepath.Join("latest", "generated", "private", "enrichment.json")
+	public := filepath.Join("latest", "generated", "members.json")
+
+	if !pathHasRestrictedSegment(restricted) || pathHasPrivateSegment(restricted) {
+		t.Error("restricted path misclassified")
+	}
+	if !pathHasPrivateSegment(private) || pathHasRestrictedSegment(private) {
+		t.Error("private path misclassified")
+	}
+	if pathIsNonPublic(public) {
+		t.Error("public path treated as non-public")
+	}
+	for _, p := range []string{restricted, private} {
+		if !pathIsNonPublic(p) {
+			t.Errorf("%s should be non-public", p)
+		}
+	}
+}

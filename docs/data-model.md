@@ -76,11 +76,16 @@ Every file `chb generate` produces lives here. Vendor-agnostic — no Odoo IDs, 
 
 A mirror of the most recent month's `generated/` files, plus aggregated multi-month files (e.g. `latest/generated/events.json` covers everything upcoming, not just one month). Convenient for downstream consumers that want "current state" without computing month bounds.
 
-### `generated/private/`
+### `generated/private/` and `generated/restricted/`
 
-Generated output that is not public. The `private` path segment is load-bearing: `writeDataFile` gives the tree 0700 directories, and the PII guard skips it rather than scrubbing names and emails the way it does for public files. Anything written below it is expected to be served only to the person it belongs to.
+Two non-public trees, distinguished by whether a reader exists at all:
 
-`latest/generated/private/members/<emailHash>.json` holds one member's month-by-month standing from 2026-01 onwards — see [Membership identity](#membership-identity).
+- **`private/`** is served to nobody. Operator-only material — PII enrichment, anything a request should never reach. Downstream consumers must not expose it under any condition.
+- **`restricted/`** is served, but only to the person it describes, and only once they have proved who they are.
+
+Both path segments are load-bearing in the same way: `writeDataFile` gives either tree 0700 directories, and the PII guard skips both rather than scrubbing names and emails the way it does for public files. They differ only in who may read them, which is a decision for whatever serves the data.
+
+`latest/generated/restricted/members/<emailHash>.json` holds one member's month-by-month standing from 2026-01 onwards — see [Membership identity](#membership-identity).
 
 ## Membership identity
 

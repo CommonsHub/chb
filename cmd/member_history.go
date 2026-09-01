@@ -20,11 +20,14 @@ import (
 // where the record is trustworthy.
 const membershipHistoryStartMonth = "2026-01"
 
-// memberHistoryDirName is the directory, under generated/private/, holding one
-// file per member. The "private" segment is what marks the tree as
-// member-readable only: writeDataFile gives every path below it 0700 dirs and
-// 0600 files, and the PII guard leaves such files unscrubbed rather than
-// treating them as public output.
+// memberHistoryDirName is the directory, under generated/restricted/, holding
+// one file per member.
+//
+// "restricted", not "private". Nothing under private/ is ever served — it is
+// operator-only material. These files exist precisely to be read by the member
+// they describe, once that member has signed in, so they need a tree that says
+// "served, but only to its owner". Both trees get 0700 directories and skip
+// the PII scrubber; only restricted/ has a reader.
 const memberHistoryDirName = "members"
 
 // emailHashPattern matches the sha256 hex digest used as a membership id. The
@@ -75,7 +78,7 @@ type MemberHistoryFile struct {
 
 // memberHistoryDir returns the directory holding the per-member files.
 func memberHistoryDir(dataDir string) string {
-	return filepath.Join(dataDir, "latest", "generated", "private", memberHistoryDirName)
+	return filepath.Join(dataDir, "latest", "generated", restrictedDirSegment, memberHistoryDirName)
 }
 
 // MemberHistoryPath returns the file for one membership id. Returns ok=false

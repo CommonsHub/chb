@@ -12,13 +12,43 @@ import (
 // are not treated as PII.
 var emailPattern = regexp.MustCompile(`(?i)\b[a-z0-9.!#$%&'*+/=?^_{|}~-]+@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b`)
 
+// Non-public directory segments. The two are not the same thing:
+//
+//   - "private" is never served to anybody. Operator-only material — PII
+//     enrichment, provider archives — that no request should ever reach.
+//   - "restricted" is served, but only to the person it belongs to, and only
+//     once they have proved who they are. A member's own history lives here.
+//
+// Both are kept out of public output and out of the PII scrubber; they differ
+// in whether a reader exists at all, which is a decision for whatever serves
+// the data, not for this package.
+const (
+	privateDirSegment    = "private"
+	restrictedDirSegment = "restricted"
+)
+
 // pathHasPrivateSegment reports whether the given slash- or os-separated path
 // contains a "private" path segment.
 func pathHasPrivateSegment(path string) bool {
+	return pathHasSegment(path, privateDirSegment)
+}
+
+// pathHasRestrictedSegment reports whether the path contains a "restricted"
+// path segment — member-only output.
+func pathHasRestrictedSegment(path string) bool {
+	return pathHasSegment(path, restrictedDirSegment)
+}
+
+// pathIsNonPublic reports whether the path is under either non-public tree.
+func pathIsNonPublic(path string) bool {
+	return pathHasPrivateSegment(path) || pathHasRestrictedSegment(path)
+}
+
+func pathHasSegment(path, segment string) bool {
 	for _, part := range strings.FieldsFunc(path, func(r rune) bool {
 		return r == '/' || r == '\\'
 	}) {
-		if part == "private" {
+		if part == segment {
 			return true
 		}
 	}

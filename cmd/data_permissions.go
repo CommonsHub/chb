@@ -80,7 +80,9 @@ func enforcePIIPolicy(path string, data []byte) []byte {
 	if !strings.HasSuffix(path, ".json") {
 		return data
 	}
-	if pathHasPrivateSegment(path) || pathHasProviderArchiveSegment(path) {
+	// Neither non-public tree is scrubbed: the guard exists to keep PII out of
+	// files anyone can read, and these are not those files.
+	if pathIsNonPublic(path) || pathHasProviderArchiveSegment(path) {
 		return data
 	}
 	cleaned, scrubbed := scrubNameFields(data)
@@ -129,7 +131,8 @@ func applyDataPathPolicy(baseDir, targetPath string, isDir bool) error {
 				continue
 			}
 			current = filepath.Join(current, part)
-			if part == "private" || providerArchivesStartAt(baseDir, current) {
+			if part == privateDirSegment || part == restrictedDirSegment ||
+				providerArchivesStartAt(baseDir, current) {
 				privateMode = true
 			}
 			mode := dataPublicDirMode
