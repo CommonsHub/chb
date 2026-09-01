@@ -870,6 +870,10 @@ func Generate(args []string) error {
 		return ""
 	})
 
+	genStep("Member history", func() string {
+		return generateMemberHistories(dataDir)
+	})
+
 	genStep("Event ticket sales", func() string {
 		enrichEventsWithTicketSales(dataDir)
 		return ""
