@@ -224,3 +224,36 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 		t.Fatalf("mode for %s = %o, want %o", path, got, want)
 	}
 }
+
+// A $DATA_DIR whose contents chb cannot chmod — a shared or mounted directory
+// owned by another user — must not fail the write. The permission policy is a
+// best-effort tightening; a refused chmod is not a write error.
+func TestApplyDataPathPolicyTolerantOfPermissionErrors(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can chmod anything; the EPERM path is unreachable")
+	}
+	baseDir := t.TempDir()
+	monthDir := filepath.Join(baseDir, "2026", "04")
+	if err := os.MkdirAll(monthDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	target := filepath.Join(monthDir, "generated", "events.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("{}"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Drop search permission on the base directory so every chmod below it is
+	// refused. applyDataPathPolicy never chmods baseDir itself, so it cannot
+	// undo this.
+	if err := os.Chmod(baseDir, 0000); err != nil {
+		t.Fatalf("chmod base dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(baseDir, 0755) })
+
+	if err := applyDataPathPolicy(baseDir, target, false); err != nil {
+		t.Fatalf("applyDataPathPolicy returned %v, want nil for a refused chmod", err)
+	}
+}

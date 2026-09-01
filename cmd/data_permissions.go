@@ -136,14 +136,19 @@ func applyDataPathPolicy(baseDir, targetPath string, isDir bool) error {
 			if privateMode {
 				mode = dataPrivateDirMode
 			}
-			if err := os.Chmod(current, mode); err != nil && !os.IsNotExist(err) {
+			// A directory we do not own (a shared $DATA_DIR, a mounted
+			// volume, a checkout owned by another user) rejects chmod with
+			// EPERM. That is not a reason to abort the write: the policy is a
+			// best-effort tightening, and the caller's data still belongs in
+			// the file it was headed for.
+			if err := os.Chmod(current, mode); err != nil && !os.IsNotExist(err) && !os.IsPermission(err) {
 				return err
 			}
 		}
 	}
 
 	if !isDir {
-		if err := os.Chmod(targetPath, dataFileMode); err != nil && !os.IsNotExist(err) {
+		if err := os.Chmod(targetPath, dataFileMode); err != nil && !os.IsNotExist(err) && !os.IsPermission(err) {
 			return err
 		}
 	}
