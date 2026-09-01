@@ -285,11 +285,16 @@ func main() {
 			exitWithError(err)
 		}
 	case "members":
-		if len(args) > 1 && args[1] == "sync" {
+		switch {
+		case len(args) > 1 && args[1] == "sync":
 			if err := cmd.MembersSync(args[2:]); err != nil {
 				exitWithError(err)
 			}
-		} else {
+		case len(args) > 1 && args[1] == "whois":
+			if err := cmd.MembersWhois(args[2:]); err != nil {
+				exitWithError(err)
+			}
+		default:
 			cmd.MembersStats(args[1:])
 		}
 	case "odoo":

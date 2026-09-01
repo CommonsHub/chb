@@ -100,6 +100,36 @@ Consequences of that, all deliberate:
 - The website host needs the same `EMAIL_HASH_SALT` to hash a signed-in user's email and find their record. Without it, it cannot identify anyone and shows no member data at all. That is the intended failure mode: no salt, no membership surface.
 - `config.env` is excluded from mirror sync (see [mirror-mode.md](mirror-mode.md)), so the salt is copied between hosts deliberately, by a human, and never by rsync.
 
+`chb members whois <email>` hashes an address with the configured salt and reports the membership on file for it — the tool for "why can't this person see their membership" (usually: they subscribed under a different address than the one on their Discord account). It also accepts a membership id directly, which needs no salt.
+
+### Funders
+
+A third membership source, after Stripe and Odoo: memberships paid outside both — a bank transfer, a grant, a membership someone gifted. Nothing fetches them, so `settings/funders.json` states each term outright and chb works out which months it covers:
+
+```json
+{
+  "funders": [
+    {
+      "emailHash": "<64-hex, from `chb members whois <email>`>",
+      "firstName": "Ada",
+      "startsAt": "2026-01-01",
+      "expiresAt": "2026-12-31",
+      "amount": { "value": 120, "decimals": 2, "currency": "EUR" },
+      "interval": "year",
+      "note": "Bank transfer, invoice CHB/2026/00123"
+    }
+  ]
+}
+```
+
+- `emailHash` is preferred over `email`; both work, but the hash keeps addresses out of a file that syncs between hosts. An `email` is hashed at sync time and so needs `EMAIL_HASH_SALT`.
+- `expiresAt` is required. A funder without an end date is an open-ended claim nobody reviews.
+- The membership is paid **until** `expiresAt`, so the month containing that date is covered in full — someone paid to the 15th is a member for that month, not two thirds of one.
+- Stripe and Odoo are the systems of record: a person who appears in either keeps that entry rather than being relabelled a funder.
+- A malformed entry is reported and skipped; one bad date does not cost the month's remaining membership.
+
+The file is edited by hand and is not shipped as a default, so nothing overwrites it.
+
 ## URIs (NIP-73)
 
 Every entity has a URI used as its canonical handle:

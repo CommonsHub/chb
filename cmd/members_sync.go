@@ -184,6 +184,13 @@ func MembersSync(args []string) error {
 		doOdoo = false
 	}
 
+	// Funders are read once: the file states each term outright, so no month
+	// needs a fetch and a past month is as reliable as the current one.
+	funders, funderErr := loadFunders()
+	if funderErr != nil {
+		Warnf("%s⚠ %v — continuing without funders%s", Fmt.Yellow, funderErr, Fmt.Reset)
+	}
+
 	for _, ym := range months {
 		year := ym.year
 		month := ym.month
@@ -234,6 +241,16 @@ func MembersSync(args []string) error {
 					snapshots = append(snapshots, snap)
 					fmt.Printf("  Odoo: loaded from cache\n")
 				}
+			}
+		}
+
+		// Funders last: Stripe and Odoo are the systems of record, so a person
+		// who appears in either keeps that entry (see mergeProviderSnapshots).
+		if len(funders) > 0 {
+			funderSnap := buildFundersSnapshot(funders, year, time.Month(month), salt)
+			if len(funderSnap.Subscriptions) > 0 {
+				fmt.Printf("  Funders: %d membership(s)\n", len(funderSnap.Subscriptions))
+				snapshots = append(snapshots, funderSnap)
 			}
 		}
 

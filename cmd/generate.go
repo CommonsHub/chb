@@ -3851,9 +3851,32 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 	var latestSummary MembersSummary
 	var latestYM string
 
+	// Funders are the third membership source, and the only one with no
+	// provider archive to read back: settings/funders.json states each term
+	// outright, so generate works them out itself. Nothing is fetched, so this
+	// stays local-only like the rest of generate — and editing the file plus a
+	// regenerate is enough, with no sync in between.
+	//
+	// Entries keyed by emailHash need no salt. One keyed by a plain email does,
+	// and is skipped with a warning when the salt is absent.
+	funders, funderErr := loadFunders()
+	if funderErr != nil {
+		Warnf("⚠ %v — continuing without funders", funderErr)
+	}
+	funderSalt := strings.TrimSpace(os.Getenv("EMAIL_HASH_SALT"))
+
 	for _, scope := range scopes {
 		year, month := scope.Year, scope.Month
 		snapshots := loadCachedProviderSnapshots(dataDir, year, month)
+		if len(funders) > 0 {
+			if y, m, ok := parseYearMonthInts(year, month); ok {
+				// Appended last: Stripe and Odoo are the systems of record, so
+				// someone present in either keeps that entry.
+				if snap := buildFundersSnapshot(funders, y, m, funderSalt); len(snap.Subscriptions) > 0 {
+					snapshots = append(snapshots, snap)
+				}
+			}
+		}
 		if len(snapshots) == 0 {
 			continue
 		}
@@ -3921,6 +3944,20 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 
 // loadCachedProviderSnapshots loads Stripe and Odoo provider snapshots from disk
 // for a given year/month.
+// parseYearMonthInts turns the generate scope's string year/month into the
+// numeric pair the funders logic works in.
+func parseYearMonthInts(year, month string) (int, time.Month, bool) {
+	y, err := strconv.Atoi(year)
+	if err != nil {
+		return 0, 0, false
+	}
+	m, err := strconv.Atoi(month)
+	if err != nil || m < 1 || m > 12 {
+		return 0, 0, false
+	}
+	return y, time.Month(m), true
+}
+
 func loadCachedProviderSnapshots(dataDir, year, month string) []providerSnapshot {
 	var snapshots []providerSnapshot
 

@@ -76,6 +76,19 @@ type MemberHistoryFile struct {
 	Months       []MemberHistoryMonth `json:"months"`
 }
 
+// loadMemberHistory reads one member's history file.
+func loadMemberHistory(path string) (*MemberHistoryFile, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var h MemberHistoryFile
+	if json.Unmarshal(data, &h) != nil {
+		return nil, false
+	}
+	return &h, true
+}
+
 // memberHistoryDir returns the directory holding the per-member files.
 func memberHistoryDir(dataDir string) string {
 	return filepath.Join(dataDir, "latest", "generated", restrictedDirSegment, memberHistoryDirName)
