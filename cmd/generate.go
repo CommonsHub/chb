@@ -3857,13 +3857,22 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 		members := mergeProviderSnapshots(snapshots)
 		summary := calculateMembersSummary(members)
 
+		derived, derivedFrom := "", ""
+		for _, snap := range snapshots {
+			if snap.Derived {
+				derived, derivedFrom = "yes", snap.DerivedFrom
+			}
+		}
+
 		out := MembersOutputFile{
-			Year:        year,
-			Month:       month,
-			ProductID:   "mixed",
-			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-			Summary:     summary,
-			Members:     members,
+			Year:            year,
+			Month:           month,
+			ProductID:       "mixed",
+			GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
+			Summary:         summary,
+			Members:         members,
+			OdooDerived:     derived == "yes",
+			OdooDerivedFrom: derivedFrom,
 		}
 
 		data, _ := json.MarshalIndent(out, "", "  ")
@@ -3877,8 +3886,12 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 			latestSummary = summary
 		}
 
-		fmt.Printf("  ✓ %s-%s: %d members (active: %d, MRR: €%.2f)\n",
-			year, month, len(members), summary.ActiveMembers, summary.MRR.Value)
+		note := ""
+		if out.OdooDerived {
+			note = fmt.Sprintf(" %s(odoo reconstructed from %s)%s", Fmt.Dim, out.OdooDerivedFrom, Fmt.Reset)
+		}
+		fmt.Printf("  ✓ %s-%s: %d members (active: %d, MRR: €%.2f)%s\n",
+			year, month, len(members), summary.ActiveMembers, summary.MRR.Value, note)
 	}
 
 	// Write latest
@@ -3907,10 +3920,18 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 func loadCachedProviderSnapshots(dataDir, year, month string) []providerSnapshot {
 	var snapshots []providerSnapshot
 
+	// The last two entries are the pre-v3 "finance/" layout. April 2026's
+	// snapshots still live there, and without the fallback a regenerate
+	// silently drops that month from 61 members to whatever the newer paths
+	// happen to hold.
 	paths := []string{
 		stripesource.Path(dataDir, year, month, stripesource.SubscriptionsFile),
 		odoosource.Path(dataDir, year, month, odoosource.SubscriptionsFile),
+		filepath.Join(dataDir, year, month, "finance", "stripe", stripesource.SubscriptionsFile),
+		filepath.Join(dataDir, year, month, "finance", "odoo", odoosource.SubscriptionsFile),
 	}
+	seenProvider := map[string]bool{}
+	sawOdoo := false
 	for _, snapPath := range paths {
 		data, err := os.ReadFile(snapPath)
 		if err != nil {
@@ -3918,7 +3939,26 @@ func loadCachedProviderSnapshots(dataDir, year, month string) []providerSnapshot
 		}
 		var snap providerSnapshot
 		if json.Unmarshal(data, &snap) == nil && len(snap.Subscriptions) > 0 {
+			// A legacy path must not double-count a provider the current
+			// layout already supplied.
+			if seenProvider[snap.Provider] {
+				continue
+			}
+			seenProvider[snap.Provider] = true
+			if snap.Provider == odoosource.Source {
+				sawOdoo = true
+			}
 			snapshots = append(snapshots, snap)
+		}
+	}
+
+	// A past month that was never synced while it was current has no Odoo
+	// snapshot — Odoo's API only reports live state. Rebuild it from the
+	// newest snapshot's subscription spans rather than reporting the month as
+	// Stripe-only, which is how May–August 2026 lost every Odoo member.
+	if !sawOdoo {
+		if derived, ok := deriveOdooSnapshotForMonth(dataDir, year, month); ok {
+			snapshots = append(snapshots, derived)
 		}
 	}
 	return snapshots

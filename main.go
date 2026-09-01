@@ -312,6 +312,13 @@ func main() {
 			if err := cmd.OdooFullSync(args[2:]); err != nil {
 				exitWithError(err)
 			}
+		case "provision":
+			// The write half that used to hide behind `chb odoo pull --yes`:
+			// create the analytic plans + accounts local rules refer to.
+			// Split out so a plain fetch can never mutate the instance.
+			if err := cmd.OdooProvision(args[2:]); err != nil {
+				exitWithError(err)
+			}
 		case "push":
 			// Top-level mirror of `chb odoo pull`: push local transactions
 			// into every linked Odoo journal. Same path as
@@ -592,6 +599,12 @@ func main() {
 			exitWithError(err)
 		}
 		if err := cmd.PushAllTargets(append(args[1:], "--yes")); err != nil {
+			exitWithError(err)
+		}
+	case "pdf":
+		// One-page PDF of a month, written for the membership rather than
+		// the bookkeeper. Local-only, like `report`.
+		if err := cmd.MemberReportCommand(args[1:]); err != nil {
 			exitWithError(err)
 		}
 	case "report":

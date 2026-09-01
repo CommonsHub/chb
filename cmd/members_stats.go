@@ -20,13 +20,14 @@ func MembersStats(args []string) {
 	posYear, posMonth, posFound := ParseYearMonthArg(args)
 
 	type monthData struct {
-		Month          string  `json:"month"`
-		TotalMembers   int     `json:"totalMembers"`
-		ActiveMembers  int     `json:"activeMembers"`
-		MonthlyMembers int     `json:"monthlyMembers"`
-		YearlyMembers  int     `json:"yearlyMembers"`
-		MRR            float64 `json:"mrr"`
+		Month          string         `json:"month"`
+		TotalMembers   int            `json:"totalMembers"`
+		ActiveMembers  int            `json:"activeMembers"`
+		MonthlyMembers int            `json:"monthlyMembers"`
+		YearlyMembers  int            `json:"yearlyMembers"`
+		MRR            float64        `json:"mrr"`
 		Sources        map[string]int `json:"sources"`
+		OdooDerived    bool           `json:"odooDerived,omitempty"`
 	}
 
 	var months []monthData
@@ -77,6 +78,7 @@ func MembersStats(args []string) {
 				YearlyMembers:  mf.Summary.YearlyMembers,
 				MRR:            mf.Summary.MRR.Value,
 				Sources:        sources,
+				OdooDerived:    mf.OdooDerived,
 			})
 		}
 	}
@@ -125,6 +127,11 @@ func MembersStats(args []string) {
 				srcStr += "  "
 			}
 			srcStr += p
+		}
+		// A reconstructed month can undercount, so never let it read as a
+		// figure that was measured at the time.
+		if m.OdooDerived {
+			srcStr += "  ~odoo reconstructed"
 		}
 
 		fmt.Printf("  %-10s  %6d  %6d  %8s  %s%s%s\n",

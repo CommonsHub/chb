@@ -112,6 +112,25 @@ func AccountsBalance(args []string) error {
 
 	verbose := HasFlag(args, "--verbose", "-v")
 
+	// --refresh fetches each account's live balance from its own source
+	// (on-chain balanceOf, the Stripe balance, the bank's running balance) and
+	// caches it. Those cached figures are what anchor the monthly report's
+	// opening/ending balances: without them the report can only roll a total
+	// forward from chb's first recorded transaction, which is wrong by
+	// whatever the account already held on that day.
+	if HasFlag(args, "--refresh") {
+		fetched := 0
+		for i := range configs {
+			before := len(liveBalanceKeys())
+			refreshAndPersistAccountBalance(&configs[i])
+			if len(liveBalanceKeys()) > before {
+				fetched++
+			}
+		}
+		fmt.Printf("  %sRefreshed live balances for %s%s\n",
+			Fmt.Dim, Pluralize(fetched, "account", ""), Fmt.Reset)
+	}
+
 	type balanceRow struct {
 		code     string
 		slug     string
@@ -370,4 +389,18 @@ func signPrefix(v float64) string {
 		return "-"
 	}
 	return ""
+}
+
+// liveBalanceKeys lists the accounts currently present in the live-balance
+// cache. Used to report how many a refresh actually managed to fetch.
+func liveBalanceKeys() []string {
+	cache := loadBalanceCache()
+	if cache == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(cache.Balances))
+	for k := range cache.Balances {
+		keys = append(keys, k)
+	}
+	return keys
 }

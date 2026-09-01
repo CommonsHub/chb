@@ -5790,6 +5790,8 @@ func PrintOdooHelp() {
 	fmt.Printf("    %sFull loop per linked journal: pull source → local, push new txs, reconcile (--local skips the fetch)%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo pull%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sFetch Odoo data into local provider archives (categories, partners, invoices, bills, journal lines)%s\n\n", f.Dim, f.Reset)
+	fmt.Printf("  %s%schb odoo provision%s\n", f.Bold, f.Cyan, f.Reset)
+	fmt.Printf("    %sCreate the analytic plans + accounts local rules refer to (the only write half of pull)%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo push%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sPush local transactions into every linked Odoo journal (mirror of pull; = chb odoo journals push)%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo mapping%s\n", f.Bold, f.Cyan, f.Reset)
@@ -5838,11 +5840,12 @@ func printOdooSyncHelp() {
 
 %sDESCRIPTION%s
   Pulls every Odoo-side dataset chb cares about into local provider
-  archives. Strictly read-only on the Odoo side. Fetches:
+  archives. Strictly read-only on the Odoo side — nothing here creates,
+  updates or deletes an Odoo record. Fetches:
 
-  - Analytic plans and accounts (categorization dimensions, ensures
-    plans 3/8/Income exist and creates one analytic.account per
-    category and per collective)
+  - Analytic plans and accounts (categorization dimensions). Plans or
+    accounts referenced by local rules but missing in Odoo are reported,
+    not created — run %schb odoo provision%s for that
   - Partners (cached for IBAN/name lookups during merge/push)
   - Invoices and bills (with private attachments)
   - Analytic enrichment lines (Odoo-side categorized postings)
@@ -5863,11 +5866,49 @@ func printOdooSyncHelp() {
 		f.Bold, f.Reset, // USAGE
 		f.Cyan, f.Reset, // chb odoo pull
 		f.Bold, f.Reset, // DESCRIPTION
+		f.Cyan, f.Reset, // chb odoo provision
 		f.Cyan, f.Reset, // chb generate
 		f.Cyan, f.Reset, // chb odoo journals push
 		f.Cyan, f.Reset, // chb setup odoo
 		f.Bold, f.Reset, // ENVIRONMENT
 		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+	)
+}
+
+func printOdooProvisionHelp() {
+	f := Fmt
+	fmt.Printf(`
+%schb odoo provision%s — Create the Odoo analytic plans and accounts chb needs
+
+%sUSAGE%s
+  %schb odoo provision%s [--dry-run] [--yes]
+
+%sDESCRIPTION%s
+  Every category and collective referenced by rules.json needs a matching
+  analytic.account in Odoo, on the collective / costs / income plan. This
+  command reconciles that set and creates whatever is missing.
+
+  It is the %sonly%s command that creates them. %schb odoo pull%s reports the
+  same list and stops — so a routine fetch can never mutate the instance.
+
+  Missing accounts are previewed before creation, with a near-duplicate
+  warning when an existing account differs only by case, spacing or a
+  trailing plural ("Block 26" vs "Block26"). Those are usually a local slug
+  that drifted from the Odoo name: rename one side rather than create a twin.
+
+%sFLAGS%s
+  %s--dry-run%s   Show what would be created, create nothing
+  %s--yes, -y%s   Skip the confirmation prompt (required for unattended runs)
+`,
+		f.Bold, f.Reset, // title
+		f.Bold, f.Reset, // USAGE
+		f.Cyan, f.Reset, // chb odoo provision
+		f.Bold, f.Reset, // DESCRIPTION
+		f.Bold, f.Reset, // only
+		f.Cyan, f.Reset, // chb odoo pull
+		f.Bold, f.Reset, // FLAGS
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 	)

@@ -43,6 +43,10 @@ func registeredDataProcessors() []DataProcessor {
 	return []DataProcessor{
 		newLumaStripeProcessor(),
 		newMoneriumProcessor(),
+		// Runs after Monerium: it reads the memo Monerium attaches to a
+		// mint/redeem, which is where the payer's structured communication
+		// actually lives on an on-chain transaction.
+		newOdooInvoiceProcessor(),
 	}
 }
 

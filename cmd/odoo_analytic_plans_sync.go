@@ -40,19 +40,21 @@ type OdooAnalyticAccountID struct {
 
 const odooAnalyticPlansSchemaVersion = 1
 
-// syncOdooAnalyticInfrastructure ensures every plan + analytic.account
-// referenced by the categorize step exists in Odoo. Idempotent: re-runs
-// only create what's missing. Returns the resulting cache for callers
-// that want to act on it immediately (categorize).
+// syncOdooAnalyticInfrastructure reconciles the plans + analytic.accounts
+// referenced by the categorize step against Odoo. Idempotent: it only ever
+// creates what's missing. Returns the resulting cache for callers that want
+// to act on it immediately (categorize).
 //
-// Creating accounts is gated: missing accounts are previewed (with a
-// near-duplicate hint when an existing account has almost the same name)
-// and only created after explicit approval — assumeYes (--yes), or an
-// interactive y/N prompt. Unattended runs (cron `chb sync`) skip creation
-// and surface a warning instead, so a slug/name mismatch in rules.json can
-// never silently mint twins like "Block 26" / "Block26" in Odoo.
-func syncOdooAnalyticInfrastructure(creds *OdooCredentials, uid int, assumeYes, dryRun bool) (*OdooAnalyticPlansFile, error) {
-	plans, err := ensureOdooAnalyticPlans(creds, uid)
+// allowCreate is the read/write switch. `chb odoo pull` passes false and is
+// then strictly read-only: a missing plan or account is reported, never
+// created. `chb odoo provision` passes true, and creation is gated a second
+// time — missing accounts are previewed (with a near-duplicate hint when an
+// existing account has almost the same name) and only created after explicit
+// approval: assumeYes (--yes), or an interactive y/N prompt. Unattended runs
+// skip creation and warn, so a slug/name mismatch in rules.json can never
+// silently mint twins like "Block 26" / "Block26" in Odoo.
+func syncOdooAnalyticInfrastructure(creds *OdooCredentials, uid int, assumeYes, dryRun, allowCreate bool) (*OdooAnalyticPlansFile, error) {
+	plans, err := ensureOdooAnalyticPlans(creds, uid, allowCreate)
 	if err != nil {
 		return nil, fmt.Errorf("plans: %v", err)
 	}
@@ -100,9 +102,9 @@ func syncOdooAnalyticInfrastructure(creds *OdooCredentials, uid int, assumeYes, 
 			missing = append(missing, spec)
 		}
 	}
-	createMissing := true
+	createMissing := allowCreate
 	if len(missing) > 0 {
-		createMissing = approveAnalyticAccountCreation(missing, existingAccounts, plans, assumeYes, dryRun)
+		createMissing = approveAnalyticAccountCreation(missing, existingAccounts, plans, assumeYes, dryRun, allowCreate)
 	}
 
 	catAccounts, err := ensureOdooAnalyticAccounts(creds, uid, wantCategories, existing, resolved, createMissing)
@@ -129,11 +131,31 @@ func syncOdooAnalyticInfrastructure(creds *OdooCredentials, uid int, assumeYes, 
 
 // OdooAnalyticPlansSync is the `chb odoo pull` step entry. Mirrors the
 // shape of OdooPartnersSync so it slots into OdooSyncAll cleanly.
+//
+// Read-only: it refreshes the local plan/account cache and reports anything
+// missing, but never creates. `chb odoo provision` is the write half.
 func OdooAnalyticPlansSync(args []string) (int, error) {
 	if HasFlag(args, "--help", "-h", "help") {
 		printOdooSyncHelp()
 		return 0, nil
 	}
+	return odooAnalyticInfrastructure(args, false)
+}
+
+// OdooProvision is `chb odoo provision` — the only command that creates the
+// analytic plans and accounts chb's rules refer to. Split out of `chb odoo
+// pull` so that fetching Odoo data can never mutate the instance: an operator
+// who only wants to read is never one forgotten flag away from writing.
+func OdooProvision(args []string) error {
+	if HasFlag(args, "--help", "-h", "help") {
+		printOdooProvisionHelp()
+		return nil
+	}
+	_, err := odooAnalyticInfrastructure(args, true)
+	return err
+}
+
+func odooAnalyticInfrastructure(args []string, allowCreate bool) (int, error) {
 	creds, err := ResolveOdooCredentials()
 	if err != nil {
 		return 0, err
@@ -145,9 +167,14 @@ func OdooAnalyticPlansSync(args []string) (int, error) {
 	if uid == 0 {
 		return 0, fmt.Errorf("Odoo authentication failed")
 	}
-	odooLog("\n%s📊 Syncing Odoo analytic plans%s\n", Fmt.Bold, Fmt.Reset)
+	if allowCreate {
+		fmt.Printf("\n%s📊 Provisioning Odoo analytic plans%s  %s%s (db: %s)%s\n",
+			Fmt.Bold, Fmt.Reset, Fmt.Dim, creds.URL, creds.DB, Fmt.Reset)
+	} else {
+		odooLog("\n%s📊 Syncing Odoo analytic plans%s\n", Fmt.Bold, Fmt.Reset)
+	}
 	file, err := syncOdooAnalyticInfrastructure(creds, uid,
-		HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"))
+		HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"), allowCreate)
 	if err != nil {
 		return 0, err
 	}
@@ -161,7 +188,7 @@ func OdooAnalyticPlansSync(args []string) (int, error) {
 // well-known ids 3 and 8 by convention; we look them up by id and surface
 // an error if they don't exist (the operator needs to create them in
 // Odoo Studio first since they're part of the chart-of-accounts setup).
-func ensureOdooAnalyticPlans(creds *OdooCredentials, uid int) (OdooAnalyticPlanIDs, error) {
+func ensureOdooAnalyticPlans(creds *OdooCredentials, uid int, allowCreate bool) (OdooAnalyticPlanIDs, error) {
 	const (
 		collectivePlanID = 3
 		costsPlanID      = 8
@@ -200,6 +227,12 @@ func ensureOdooAnalyticPlans(creds *OdooCredentials, uid int) (OdooAnalyticPlanI
 	if incomeID > 0 {
 		plans.Income = incomeID
 	} else {
+		// Read-only callers (`chb odoo pull`) must not conjure a plan. Fail
+		// this step instead — OdooSyncAll reports it and carries on with the
+		// remaining fetches, and the operator gets the one command that fixes it.
+		if !allowCreate {
+			return plans, fmt.Errorf("income analytic plan not found — run 'chb odoo provision' to create it")
+		}
 		id, err := createOdooAnalyticPlan(creds, uid, "Income")
 		if err != nil {
 			return plans, fmt.Errorf("create income plan: %v", err)
@@ -453,10 +486,11 @@ func ensureOdooAnalyticAccounts(creds *OdooCredentials, uid int, specs []analyti
 // "Block26") — those are usually a rules.json slug that drifted from the
 // Odoo name, better fixed by renaming one side than by creating a twin.
 //
-// Resolution order: --dry-run never creates; --yes always creates; an
-// interactive terminal gets a y/N prompt; unattended runs (cron) skip
-// creation and emit a warning with the command to run after review.
-func approveAnalyticAccountCreation(missing []analyticAccountSpec, existing []analyticExistingAccount, plans OdooAnalyticPlanIDs, assumeYes, dryRun bool) bool {
+// Resolution order: a read-only caller (allowCreate=false) only reports;
+// --dry-run never creates; --yes always creates; an interactive terminal gets
+// a y/N prompt; unattended runs (cron) skip creation and emit a warning with
+// the command to run after review.
+func approveAnalyticAccountCreation(missing []analyticAccountSpec, existing []analyticExistingAccount, plans OdooAnalyticPlanIDs, assumeYes, dryRun, allowCreate bool) bool {
 	planLabel := map[int]string{
 		plans.Collective: "collective",
 		plans.Costs:      "costs",
@@ -475,6 +509,10 @@ func approveAnalyticAccountCreation(missing []analyticAccountSpec, existing []an
 	}
 
 	switch {
+	case !allowCreate:
+		Warnf("%s⚠ %s  Not created — 'chb odoo pull' never writes to Odoo. Review the list (fix slug/name mismatches), then run: chb odoo provision%s",
+			Fmt.Yellow, b.String(), Fmt.Reset)
+		return false
 	case dryRun:
 		fmt.Fprintf(os.Stderr, "\n  %s%s  (dry-run: not creating)%s\n", Fmt.Yellow, b.String(), Fmt.Reset)
 		return false
@@ -488,7 +526,7 @@ func approveAnalyticAccountCreation(missing []analyticAccountSpec, existing []an
 		resp = strings.ToLower(strings.TrimSpace(resp))
 		return resp == "y" || resp == "yes"
 	default:
-		Warnf("%s⚠ %s  Not creating them in an unattended run — review the list (fix slug/name mismatches), then run: chb odoo pull --yes%s",
+		Warnf("%s⚠ %s  Not creating them in an unattended run — review the list (fix slug/name mismatches), then run: chb odoo provision --yes%s",
 			Fmt.Yellow, b.String(), Fmt.Reset)
 		return false
 	}

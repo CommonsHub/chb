@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/CommonsHub/chb/money"
 )
 
 func TransactionsStats(args []string) {
@@ -264,54 +266,16 @@ func TransactionsStats(args []string) {
 	fmt.Println()
 }
 
-// isEURCurrency returns true for EUR-family currencies (EUR, EURe, EURb, etc.)
-func isEURCurrency(currency string) bool {
-	return currency == "" || strings.HasPrefix(strings.ToUpper(currency), "EUR")
-}
+// These five are thin wrappers over the money package, which is the single
+// definition of how the hub writes and groups money. They stay here so the
+// ~300 existing call sites read unchanged, and so that the terminal report and
+// the printed poster can never drift apart on the same figures.
 
-// fmtToken formats a token amount with its symbol, e.g. "1,234.56 CHT"
-func fmtToken(v float64, symbol string) string {
-	return fmtNumber(math.Abs(v)) + " " + symbol
-}
-
-// fmtEUR formats a number as €12,345.67
-func fmtEUR(v float64) string {
-	return fmtNumber(math.Abs(v)) + " EUR"
-}
-
-// fmtEURSigned formats with +/- prefix
-func fmtEURSigned(v float64) string {
-	if v >= 0 {
-		return "+" + fmtEUR(v)
-	}
-	return "-" + fmtEUR(-v)
-}
-
-// fmtNumber formats a float with thousands separators: 12,345.67
-func fmtNumber(v float64) string {
-	// Split integer and decimal parts. Use the absolute value of the decimal
-	// part so the "%.2f"[1:] slice always strips a leading "0" (".67"), never a
-	// minus sign: for v=-0.0 the old code produced "%.2f"=-0.00 → [1:]="0.00",
-	// which combined with intPart "0" rendered "00.00". The sign of v lives in
-	// intPart (and in the caller, which negates before calling for negatives).
-	intPart := int64(v)
-	decPart := math.Abs(v - float64(intPart))
-	dec := fmt.Sprintf("%.2f", decPart)[1:] // ".67"
-
-	// Format integer with commas
-	s := fmt.Sprintf("%d", intPart)
-	if len(s) <= 3 {
-		return s + dec
-	}
-	var result []byte
-	for i, c := range s {
-		if i > 0 && (len(s)-i)%3 == 0 {
-			result = append(result, ',')
-		}
-		result = append(result, byte(c))
-	}
-	return string(result) + dec
-}
+func isEURCurrency(currency string) bool       { return money.IsEUR(currency) }
+func fmtToken(v float64, symbol string) string { return money.Token(v, symbol) }
+func fmtEUR(v float64) string                  { return money.EUR(v) }
+func fmtEURSigned(v float64) string            { return money.EURSigned(v) }
+func fmtNumber(v float64) string               { return money.Number(v) }
 
 func joinStrings(ss []string) string {
 	r := ""
