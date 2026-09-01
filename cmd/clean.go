@@ -135,18 +135,33 @@ type etherscanRename struct {
 }
 
 // etherscanAddressOwners maps a lowercased wallet address to the slug of the
-// configured Etherscan account that currently owns it. Used by `chb clean` to
-// re-file cache files under the account that owns the wallet — e.g. after a
-// wallet migration where the old address moved to a different account.
+// configured Etherscan account that currently owns it, keyed by CHAIN and
+// address. Used by `chb clean` to re-file cache files under the account that
+// owns the wallet — e.g. after a wallet migration where the old address moved
+// to a different account.
+//
+// The chain must be part of the key. The same wallet address is routinely
+// configured on more than one chain (0x6fdf… is 202605-savings-hacked on
+// gnosis and savings-polygon on polygon), and an address-only map keeps
+// whichever account happens to come last in accounts.json. That silently
+// renamed every gnosis archive for the address to the polygon account's slug,
+// and generate — which reads the slug straight off the filename — then booked
+// gnosis transfers against the polygon account.
 func etherscanAddressOwners() map[string]string {
 	owners := map[string]string{}
 	for _, acc := range LoadAccountConfigs() {
 		if acc.Provider != "etherscan" || strings.TrimSpace(acc.Address) == "" {
 			continue
 		}
-		owners[strings.ToLower(strings.TrimSpace(acc.Address))] = acc.Slug
+		owners[etherscanOwnerKey(acc.Chain, acc.Address)] = acc.Slug
 	}
 	return owners
+}
+
+// etherscanOwnerKey is the (chain, address) lookup key for archive ownership.
+func etherscanOwnerKey(chain, address string) string {
+	return strings.ToLower(strings.TrimSpace(chain)) + "|" +
+		strings.ToLower(strings.TrimSpace(address))
 }
 
 // planEtherscanRenames scans the Etherscan archives and returns the renames
@@ -209,10 +224,12 @@ func planEtherscanRenames(dataDir string) (renames []etherscanRename, skipped []
 			return nil
 		}
 
-		// Re-file under the account that currently owns this wallet; fall
-		// back to the existing slug when no configured account claims it.
+		// Re-file under the account that currently owns this wallet ON THIS
+		// CHAIN; fall back to the existing slug when no configured account
+		// claims it. Never rename across chains: the archive's directory is
+		// the authority on which chain it holds.
 		ownerSlug := slug
-		if owner, found := owners[strings.ToLower(addr)]; found {
+		if owner, found := owners[etherscanOwnerKey(filepath.Base(chainDir), addr)]; found {
 			ownerSlug = owner
 		}
 
