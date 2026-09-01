@@ -76,6 +76,25 @@ Every file `chb generate` produces lives here. Vendor-agnostic — no Odoo IDs, 
 
 A mirror of the most recent month's `generated/` files, plus aggregated multi-month files (e.g. `latest/generated/events.json` covers everything upcoming, not just one month). Convenient for downstream consumers that want "current state" without computing month bounds.
 
+### `generated/private/`
+
+Generated output that is not public. The `private` path segment is load-bearing: `writeDataFile` gives the tree 0700 directories, and the PII guard skips it rather than scrubbing names and emails the way it does for public files. Anything written below it is expected to be served only to the person it belongs to.
+
+`latest/generated/private/members/<emailHash>.json` holds one member's month-by-month standing from 2026-01 onwards — see [Membership identity](#membership-identity).
+
+## Membership identity
+
+A member's id is `emailHash`: `sha256(lowercase(trim(email)) + EMAIL_HASH_SALT)`. It is the join key across months, the filename of their history, and the only way the website can recognise a signed-in person as a member.
+
+**The salt is the identity.** The same email must always produce the same digest, on every machine that generates member data and on the website host that resolves it. Rotating the salt re-identifies the entire membership: every id changes, every history splits in two, and nothing links the halves. This has gone wrong twice — once when `chb setup` dropped the key from `config.env` on rewrite (see `cmd/setup.go`), and once when 2026-04 was written under a different salt and its 61 continuing members read as 61 one-month strangers.
+
+Consequences of that, all deliberate:
+
+- `chb members sync` refuses to run without `EMAIL_HASH_SALT` rather than minting one. First-ever setup uses `--init-salt`, which mints and persists a salt exactly once.
+- `chb generate` warns when a month shares no membership id with the month before it — the signature of a salt change.
+- The website host needs the same `EMAIL_HASH_SALT` to hash a signed-in user's email and find their record. Without it, it cannot identify anyone and shows no member data at all. That is the intended failure mode: no salt, no membership surface.
+- `config.env` is excluded from mirror sync (see [mirror-mode.md](mirror-mode.md)), so the salt is copied between hosts deliberately, by a human, and never by rsync.
+
 ## URIs (NIP-73)
 
 Every entity has a URI used as its canonical handle:
