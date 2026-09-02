@@ -102,6 +102,31 @@ Consequences of that, all deliberate:
 
 `chb members whois <email>` hashes an address with the configured salt and reports the membership on file for it — the tool for "why can't this person see their membership" (usually: they subscribed under a different address than the one on their Discord account). It also accepts a membership id directly, which needs no salt.
 
+### Linking a member's identifiers
+
+A member pays with one address and signs in with another often enough that the two look like different people, or like nobody. `settings/member-links.json` says which identifiers belong to the same person:
+
+```json
+{
+  "links": [
+    {
+      "identifiers": [
+        "discord:user:123456789012345678",
+        "email:sha256:<hash of their Stripe address>",
+        "email:sha256:<hash of an older address>"
+      ],
+      "note": "pays with a personal address, Discord uses the work one"
+    }
+  ]
+}
+```
+
+Identifiers follow the same [NIP-73 URI convention](#uris-nip-73) as everything else — `discord:user:<snowflake>`, `nostr:pubkey:<hex>`, `email:sha256:<emailHash>`. **No kind is privileged.** Discord is what most people sign in with today; that is a fact about the deployment, not about the code, and adding Nostr auth means adding entries of another kind rather than another special case. Note that a Discord *username* is not an identifier: usernames have been mutable since 2023, so links key on the account id.
+
+The canonical member id — which names the history file — is the entry's explicit `id` when set, otherwise the first `email:sha256:` hash. That leaves every unlinked member's filename exactly as it was, so introducing the file migrates nothing. `id` exists for a member with no email in the system at all, whose handle should not be derived from any provider; without either, a digest of the first identifier gives them a stable id in the same shape.
+
+A linked member's history is the **union of months across all their aliases**, so someone who changed address gets one continuous timeline rather than two fragments. `latest/generated/restricted/members-index.json` maps every identifier to its member, so a caller holding a Discord id — or tomorrow a pubkey — finds the history without knowing any email. It sits in `restricted/` because *that a given Discord account belongs to a member* is exactly the fact we do not publish.
+
 ### Funders
 
 A third membership source, after Stripe and Odoo: memberships paid outside both — a bank transfer, a grant, a membership someone gifted. Nothing fetches them, so `settings/funders.json` states each term outright and chb works out which months it covers:

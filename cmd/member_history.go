@@ -69,8 +69,12 @@ type MemberHistoryFile struct {
 	// FirstMonth and LastMonth bound the months present in Months. Gaps
 	// between them are real: a month the member does not appear in is a month
 	// they were not a member.
-	FirstMonth   string               `json:"firstMonth,omitempty"`
-	LastMonth    string               `json:"lastMonth,omitempty"`
+	FirstMonth string `json:"firstMonth,omitempty"`
+	LastMonth  string `json:"lastMonth,omitempty"`
+	// Identifiers lists every handle this member is known by — the email
+	// hashes they have paid under, plus any Discord or Nostr identity linked
+	// to them. The member id is one of these, not a separate kind of thing.
+	Identifiers  []string             `json:"identifiers,omitempty"`
 	MonthsActive int                  `json:"monthsActive"`
 	GeneratedAt  string               `json:"generatedAt"`
 	Months       []MemberHistoryMonth `json:"months"`
@@ -118,6 +122,15 @@ func generateMemberHistories(dataDir string) string {
 		return ""
 	}
 
+	// Identifiers that belong to the same person resolve to one canonical id,
+	// so a member who pays with one address and signs in with another gets a
+	// single continuous history instead of two fragments.
+	links, linkErr := loadMemberLinks()
+	if linkErr != nil {
+		Warnf("⚠ %v — continuing without member links", linkErr)
+	}
+	identities := buildMemberIdentityIndex(links)
+
 	histories := map[string]*MemberHistoryFile{}
 	monthIDs := map[string]map[string]bool{}
 	for _, ym := range months {
@@ -130,10 +143,16 @@ func generateMemberHistories(dataDir string) string {
 			continue
 		}
 		for _, m := range mf.Members {
-			id := strings.ToLower(strings.TrimSpace(m.Accounts.EmailHash))
-			if !emailHashPattern.MatchString(id) {
+			hash := strings.ToLower(strings.TrimSpace(m.Accounts.EmailHash))
+			if !emailHashPattern.MatchString(hash) {
 				// No stable identity — nothing to file this month under, and
 				// guessing would attach one person's history to another.
+				continue
+			}
+			// Unlinked members resolve to their own hash, so this is a no-op
+			// for everyone who needs no link.
+			id := identities.Resolve(EmailIdentifier(hash))
+			if id == "" {
 				continue
 			}
 			if monthIDs[ym] == nil {
@@ -144,6 +163,9 @@ func generateMemberHistories(dataDir string) string {
 			if h == nil {
 				h = &MemberHistoryFile{SchemaVersion: 1, MemberID: id}
 				histories[id] = h
+			}
+			if seenAs := EmailIdentifier(hash); !containsString(h.Identifiers, seenAs) {
+				h.Identifiers = append(h.Identifiers, seenAs)
 			}
 			// Later months win for the profile fields: a member's display name
 			// or linked Discord can change, and the most recent reading is the
@@ -184,7 +206,16 @@ func generateMemberHistories(dataDir string) string {
 	generatedAt := time.Now().UTC().Format(time.RFC3339)
 	written := 0
 	for id, h := range histories {
+		// Merging two aliases can contribute the same month twice — someone
+		// who paid under both addresses in the overlap. One entry per month.
+		h.Months = dedupeHistoryMonths(h.Months)
 		sort.Slice(h.Months, func(i, j int) bool { return h.Months[i].Month < h.Months[j].Month })
+		for _, alias := range identities.Aliases(id) {
+			if !containsString(h.Identifiers, alias) {
+				h.Identifiers = append(h.Identifiers, alias)
+			}
+		}
+		sort.Strings(h.Identifiers)
 		h.MonthsActive = len(h.Months)
 		if len(h.Months) > 0 {
 			h.FirstMonth = h.Months[0].Month
@@ -206,6 +237,8 @@ func generateMemberHistories(dataDir string) string {
 		}
 		written++
 	}
+	writeMemberIdentityIndex(dataDir, histories)
+
 	if written == 0 {
 		return ""
 	}
@@ -317,4 +350,60 @@ func warnOnIdentityDiscontinuity(months []string, monthIDs map[string]map[string
 			months[i], months[i-1], len(prev), len(cur), months[i], months[i])
 	}
 	return flagged
+}
+
+// dedupeHistoryMonths keeps one entry per month, preferring an observed month
+// over a reconstructed one when a member's aliases disagree.
+func dedupeHistoryMonths(months []MemberHistoryMonth) []MemberHistoryMonth {
+	best := map[string]MemberHistoryMonth{}
+	order := []string{}
+	for _, m := range months {
+		existing, seen := best[m.Month]
+		if !seen {
+			best[m.Month] = m
+			order = append(order, m.Month)
+			continue
+		}
+		if existing.Derived && !m.Derived {
+			best[m.Month] = m
+		}
+	}
+	out := make([]MemberHistoryMonth, 0, len(order))
+	for _, ym := range order {
+		out = append(out, best[ym])
+	}
+	return out
+}
+
+// writeMemberIdentityIndex records which identifier belongs to which member,
+// so a caller holding a Discord account id — or tomorrow a Nostr pubkey — can
+// find the history without knowing the member's email.
+//
+// It lives beside the histories under restricted/, not in the public tree:
+// that a given Discord account belongs to a member is exactly the fact we do
+// not publish.
+func writeMemberIdentityIndex(dataDir string, histories map[string]*MemberHistoryFile) {
+	index := map[string]string{}
+	for id, h := range histories {
+		for _, identifier := range h.Identifiers {
+			index[identifier] = id
+		}
+	}
+	payload := struct {
+		SchemaVersion int               `json:"schemaVersion"`
+		GeneratedAt   string            `json:"generatedAt"`
+		Identifiers   map[string]string `json:"identifiers"`
+	}{
+		SchemaVersion: 1,
+		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
+		Identifiers:   index,
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return
+	}
+	path := filepath.Join(dataDir, "latest", "generated", restrictedDirSegment, "members-index.json")
+	if err := writeDataFile(path, data); err != nil {
+		Warnf("⚠ member identity index: %v", err)
+	}
 }
