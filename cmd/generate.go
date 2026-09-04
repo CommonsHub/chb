@@ -870,6 +870,10 @@ func Generate(args []string) error {
 		return ""
 	})
 
+	genStep("Member history", func() string {
+		return generateMemberHistories(dataDir)
+	})
+
 	genStep("Event ticket sales", func() string {
 		enrichEventsWithTicketSales(dataDir)
 		return ""
@@ -902,6 +906,16 @@ func Generate(args []string) error {
 			return ""
 		}
 		return Pluralize(written, "month", "")
+	})
+
+	genStep("Proposals", func() string {
+		// Cross-month by nature: a proposal is a forum thread that outlives
+		// the month it was opened in, so this rebuilds the whole index
+		// rather than looping over scopes.
+		if err := GenerateProposals(nil); err != nil {
+			return "error: " + err.Error()
+		}
+		return ""
 	})
 
 	genStep("Inbound-spread indexes", func() string {
@@ -3847,9 +3861,32 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 	var latestSummary MembersSummary
 	var latestYM string
 
+	// Funders are the third membership source, and the only one with no
+	// provider archive to read back: settings/funders.json states each term
+	// outright, so generate works them out itself. Nothing is fetched, so this
+	// stays local-only like the rest of generate — and editing the file plus a
+	// regenerate is enough, with no sync in between.
+	//
+	// Entries keyed by emailHash need no salt. One keyed by a plain email does,
+	// and is skipped with a warning when the salt is absent.
+	funders, funderErr := loadFunders()
+	if funderErr != nil {
+		Warnf("⚠ %v — continuing without funders", funderErr)
+	}
+	funderSalt := strings.TrimSpace(os.Getenv("EMAIL_HASH_SALT"))
+
 	for _, scope := range scopes {
 		year, month := scope.Year, scope.Month
 		snapshots := loadCachedProviderSnapshots(dataDir, year, month)
+		if len(funders) > 0 {
+			if y, m, ok := parseYearMonthInts(year, month); ok {
+				// Appended last: Stripe and Odoo are the systems of record, so
+				// someone present in either keeps that entry.
+				if snap := buildFundersSnapshot(funders, y, m, funderSalt); len(snap.Subscriptions) > 0 {
+					snapshots = append(snapshots, snap)
+				}
+			}
+		}
 		if len(snapshots) == 0 {
 			continue
 		}
@@ -3857,13 +3894,22 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 		members := mergeProviderSnapshots(snapshots)
 		summary := calculateMembersSummary(members)
 
+		derived, derivedFrom := "", ""
+		for _, snap := range snapshots {
+			if snap.Derived {
+				derived, derivedFrom = "yes", snap.DerivedFrom
+			}
+		}
+
 		out := MembersOutputFile{
-			Year:        year,
-			Month:       month,
-			ProductID:   "mixed",
-			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-			Summary:     summary,
-			Members:     members,
+			Year:            year,
+			Month:           month,
+			ProductID:       "mixed",
+			GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
+			Summary:         summary,
+			Members:         members,
+			OdooDerived:     derived == "yes",
+			OdooDerivedFrom: derivedFrom,
 		}
 
 		data, _ := json.MarshalIndent(out, "", "  ")
@@ -3877,8 +3923,12 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 			latestSummary = summary
 		}
 
-		fmt.Printf("  ✓ %s-%s: %d members (active: %d, MRR: €%.2f)\n",
-			year, month, len(members), summary.ActiveMembers, summary.MRR.Value)
+		note := ""
+		if out.OdooDerived {
+			note = fmt.Sprintf(" %s(odoo reconstructed from %s)%s", Fmt.Dim, out.OdooDerivedFrom, Fmt.Reset)
+		}
+		fmt.Printf("  ✓ %s-%s: %d members (active: %d, MRR: €%.2f)%s\n",
+			year, month, len(members), summary.ActiveMembers, summary.MRR.Value, note)
 	}
 
 	// Write latest
@@ -3904,13 +3954,35 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 
 // loadCachedProviderSnapshots loads Stripe and Odoo provider snapshots from disk
 // for a given year/month.
+// parseYearMonthInts turns the generate scope's string year/month into the
+// numeric pair the funders logic works in.
+func parseYearMonthInts(year, month string) (int, time.Month, bool) {
+	y, err := strconv.Atoi(year)
+	if err != nil {
+		return 0, 0, false
+	}
+	m, err := strconv.Atoi(month)
+	if err != nil || m < 1 || m > 12 {
+		return 0, 0, false
+	}
+	return y, time.Month(m), true
+}
+
 func loadCachedProviderSnapshots(dataDir, year, month string) []providerSnapshot {
 	var snapshots []providerSnapshot
 
+	// The last two entries are the pre-v3 "finance/" layout. April 2026's
+	// snapshots still live there, and without the fallback a regenerate
+	// silently drops that month from 61 members to whatever the newer paths
+	// happen to hold.
 	paths := []string{
 		stripesource.Path(dataDir, year, month, stripesource.SubscriptionsFile),
 		odoosource.Path(dataDir, year, month, odoosource.SubscriptionsFile),
+		filepath.Join(dataDir, year, month, "finance", "stripe", stripesource.SubscriptionsFile),
+		filepath.Join(dataDir, year, month, "finance", "odoo", odoosource.SubscriptionsFile),
 	}
+	seenProvider := map[string]bool{}
+	sawOdoo := false
 	for _, snapPath := range paths {
 		data, err := os.ReadFile(snapPath)
 		if err != nil {
@@ -3918,7 +3990,26 @@ func loadCachedProviderSnapshots(dataDir, year, month string) []providerSnapshot
 		}
 		var snap providerSnapshot
 		if json.Unmarshal(data, &snap) == nil && len(snap.Subscriptions) > 0 {
+			// A legacy path must not double-count a provider the current
+			// layout already supplied.
+			if seenProvider[snap.Provider] {
+				continue
+			}
+			seenProvider[snap.Provider] = true
+			if snap.Provider == odoosource.Source {
+				sawOdoo = true
+			}
 			snapshots = append(snapshots, snap)
+		}
+	}
+
+	// A past month that was never synced while it was current has no Odoo
+	// snapshot — Odoo's API only reports live state. Rebuild it from the
+	// newest snapshot's subscription spans rather than reporting the month as
+	// Stripe-only, which is how May–August 2026 lost every Odoo member.
+	if !sawOdoo {
+		if derived, ok := deriveOdooSnapshotForMonth(dataDir, year, month); ok {
+			snapshots = append(snapshots, derived)
 		}
 	}
 	return snapshots

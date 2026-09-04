@@ -37,6 +37,8 @@ func PrintHelp(version string) {
   %sattachments pull%s    Download invoice and bill attachments from Odoo
   %smessages pull%s       Fetch Discord messages
   %smessages stats%s      Show message statistics
+  %sproposals%s           List proposals from the Discord forum
+  %sproposals pull%s      Mirror the Discord proposals forum
   %simages pull%s         Download images from Discord and Luma
   %sproviders%s           List providers and provider-scoped commands
   %spull%s                Pull from every configured source
@@ -97,10 +99,11 @@ func PrintHelp(version string) {
 		f.Bold, f.Reset, // USAGE
 		f.Cyan, f.Reset, // chb in usage
 		f.Bold, f.Reset, // COMMANDS
-		// 32 command rows (events, calendars, calendars pull, events stats,
+		// 34 command rows (events, calendars, calendars pull, events stats,
 		// rooms, bookings, bookings stats, transactions pull, transactions stats,
 		// search, contacts, nostr pull/push, invoices pull, bills pull, attachments
-		// pull, messages pull, messages stats, images pull, providers, pull,
+		// pull, messages pull, messages stats, proposals, proposals pull,
+		// images pull, providers, pull,
 		// generate, push, sync, members pull, report, income, expenses,
 		// status, stats, clean, doctor, tools)
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
@@ -110,6 +113,7 @@ func PrintHelp(version string) {
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, // search + contacts (31st, 32nd rows)
+		f.Cyan, f.Reset, f.Cyan, f.Reset, // proposals + proposals pull (33rd, 34th rows)
 		f.Bold, f.Reset, // OPTIONS
 		// 8 options rows
 		f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset,

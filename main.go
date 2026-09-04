@@ -32,6 +32,16 @@ func exitAfterDiagnostics() {
 
 func main() {
 	cmd.Version = cmd.ResolveVersion(VERSION)
+
+	// First thing, before anything creates a directory or opens the
+	// diagnostics log ($DATA_DIR/logs): if a data root lives on an external
+	// drive that isn't mounted, stop. Reported without cmd.Errorf on purpose
+	// — that would create the very tree we're refusing to write.
+	if err := cmd.EnsureDataRootsMounted(); err != nil {
+		os.Stderr.WriteString("\nError: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+
 	cmd.EnsureSettingsBootstrapped()
 	odooURLExplicit := os.Getenv("ODOO_URL") != ""
 	odooDBExplicit := os.Getenv("ODOO_DATABASE") != ""
@@ -253,6 +263,27 @@ func main() {
 		} else {
 			exitWithUsage("%sUsage: chb messages [sync|stats]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		}
+	case "proposals":
+		// Discord FORUM channel (one thread per proposal). Deliberately not
+		// part of `chb messages` — a forum parent has no messages of its own.
+		sub := ""
+		if len(args) > 1 {
+			sub = args[1]
+		}
+		switch sub {
+		case "pull", "sync":
+			if _, err := cmd.ProposalsSync(args[2:]); err != nil {
+				exitWithError(err)
+			}
+		case "generate":
+			if err := cmd.GenerateProposals(args[2:]); err != nil {
+				exitWithError(err)
+			}
+		default:
+			if err := cmd.ProposalsList(args[1:]); err != nil {
+				exitWithError(err)
+			}
+		}
 	case "images":
 		if len(args) > 1 && (args[1] == "sync" || args[1] == "help" || args[1] == "--help" || args[1] == "-h") {
 			if _, err := cmd.ImagesSync(args[1:]); err != nil {
@@ -285,11 +316,16 @@ func main() {
 			exitWithError(err)
 		}
 	case "members":
-		if len(args) > 1 && args[1] == "sync" {
+		switch {
+		case len(args) > 1 && args[1] == "sync":
 			if err := cmd.MembersSync(args[2:]); err != nil {
 				exitWithError(err)
 			}
-		} else {
+		case len(args) > 1 && args[1] == "whois":
+			if err := cmd.MembersWhois(args[2:]); err != nil {
+				exitWithError(err)
+			}
+		default:
 			cmd.MembersStats(args[1:])
 		}
 	case "odoo":
@@ -310,6 +346,13 @@ func main() {
 			// local (+ metadata + generate), push new txs into the
 			// journal, and reconcile. --local skips the remote fetch.
 			if err := cmd.OdooFullSync(args[2:]); err != nil {
+				exitWithError(err)
+			}
+		case "provision":
+			// The write half that used to hide behind `chb odoo pull --yes`:
+			// create the analytic plans + accounts local rules refer to.
+			// Split out so a plain fetch can never mutate the instance.
+			if err := cmd.OdooProvision(args[2:]); err != nil {
 				exitWithError(err)
 			}
 		case "push":
@@ -594,6 +637,12 @@ func main() {
 		if err := cmd.PushAllTargets(append(args[1:], "--yes")); err != nil {
 			exitWithError(err)
 		}
+	case "pdf":
+		// One-page PDF of a month, written for the membership rather than
+		// the bookkeeper. Local-only, like `report`.
+		if err := cmd.MemberReportCommand(args[1:]); err != nil {
+			exitWithError(err)
+		}
 	case "report":
 		if err := cmd.Report(args[1:]); err != nil {
 			exitWithError(err)
@@ -701,6 +750,9 @@ func needsWritableDataDir(args []string) bool {
 		return len(args) > 2 && (strings.EqualFold(args[2], "sync") || strings.EqualFold(args[2], "generate"))
 	case "calendars", "invoices", "bills", "messages", "images", "attachments", "members", "odoo":
 		return len(args) > 1 && strings.EqualFold(args[1], "sync")
+	case "proposals":
+		return len(args) > 1 && (strings.EqualFold(args[1], "sync") || strings.EqualFold(args[1], "pull") ||
+			strings.EqualFold(args[1], "generate"))
 	case "transactions":
 		return hasArg(args[1:], "sync")
 	default:

@@ -92,7 +92,9 @@ func odooFixAnalyticAccounts(creds *OdooCredentials, uid int, dryRun, assumeYes 
 	fmt.Printf("\n%s🔧 Odoo analytic-account fix%s  %s%s (db: %s)%s\n",
 		Fmt.Bold, Fmt.Reset, Fmt.Dim, creds.URL, creds.DB, Fmt.Reset)
 
-	plans, err := ensureOdooAnalyticPlans(creds, uid)
+	// `chb odoo fix` already writes (it deletes duplicate accounts and
+	// rebinds slugs), so it keeps the create-if-missing behaviour.
+	plans, err := ensureOdooAnalyticPlans(creds, uid, true)
 	if err != nil {
 		return fmt.Errorf("plans: %v", err)
 	}

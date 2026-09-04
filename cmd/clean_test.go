@@ -96,3 +96,72 @@ func TestPlanStaleSourceDirs(t *testing.T) {
 		t.Fatalf("staleDirs = %v, want [%s]", dirs, filepath.Join(withProviders, "sources"))
 	}
 }
+
+// The same wallet address is routinely configured on two chains (a Gnosis
+// account and its Polygon counterpart). Ownership must be resolved per chain:
+// an address-only map keeps whichever account comes last in accounts.json and
+// renames the Gnosis archives to the Polygon slug, after which generate books
+// Gnosis transfers against the Polygon account.
+func TestPlanEtherscanRenamesDoesNotCrossChains(t *testing.T) {
+	appDir := filepath.Join(t.TempDir(), "app")
+	t.Setenv("APP_DATA_DIR", appDir)
+	if err := os.MkdirAll(filepath.Join(appDir, "settings"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	const shared = "0x6fDF0AaE33E313d9C98D2Aa19Bcd8EF777912CBf"
+	// Polygon deliberately listed last — it is the entry an address-only map
+	// would keep for both chains.
+	accounts := []map[string]any{
+		{"slug": "savings-hacked", "provider": "etherscan", "chain": "gnosis", "address": shared},
+		{"slug": "savings-polygon", "provider": "etherscan", "chain": "polygon", "address": shared},
+	}
+	accJSON, _ := json.Marshal(accounts)
+	if err := os.WriteFile(filepath.Join(appDir, "settings", "accounts.json"), accJSON, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	dataDir := t.TempDir()
+	gnosis := etherscansource.Path(dataDir, "2024", "01", "gnosis")
+	polygon := etherscansource.Path(dataDir, "2024", "01", "polygon")
+	for _, d := range []string{gnosis, polygon} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Both archives are already named for the account that owns the wallet on
+	// their own chain. Neither may be renamed.
+	gnosisFile := filepath.Join(gnosis, "savings-hacked.0x6fdf-2cbf.EURe.json")
+	writeJSONFileForTest(t, gnosisFile, etherscansource.CacheFile{
+		Transactions: []etherscansource.TokenTransfer{{Hash: "0x1"}},
+		Account:      shared, Chain: "gnosis", Token: "EURe",
+	})
+	polygonFile := filepath.Join(polygon, "savings-polygon.0x6fdf-2cbf.EURe.json")
+	writeJSONFileForTest(t, polygonFile, etherscansource.CacheFile{
+		Transactions: []etherscansource.TokenTransfer{{Hash: "0x2"}},
+		Account:      shared, Chain: "polygon", Token: "EURe",
+	})
+
+	if renames, _ := planEtherscanRenames(dataDir); len(renames) != 0 {
+		for _, r := range renames {
+			t.Errorf("unexpected rename %s → %s", r.relFrom, filepath.Base(r.to))
+		}
+		t.Fatalf("renames = %d, want 0", len(renames))
+	}
+
+	// And a Gnosis archive misfiled under the Polygon slug (what the
+	// address-only map produced) is re-filed back to its Gnosis owner.
+	misfiled := filepath.Join(gnosis, "savings-polygon.0x6fdf-2cbf.EURb.json")
+	writeJSONFileForTest(t, misfiled, etherscansource.CacheFile{
+		Transactions: []etherscansource.TokenTransfer{{Hash: "0x3"}},
+		Account:      shared, Chain: "gnosis", Token: "EURb",
+	})
+	renames, _ := planEtherscanRenames(dataDir)
+	if len(renames) != 1 {
+		t.Fatalf("renames = %d, want 1: %+v", len(renames), renames)
+	}
+	want := filepath.Join(gnosis, "savings-hacked.0x6fdf-2cbf.EURb.json")
+	if renames[0].to != want {
+		t.Errorf("rename target = %q, want %q", renames[0].to, want)
+	}
+}

@@ -39,8 +39,16 @@ sync file calls into the generate file via a single hand-off function (e.g.
 `generateCalendarsForMonths`). Don't add a `generated/` write to a `*_sync.go`
 file — split it instead.
 
-Current pair: `cmd/events_sync.go` ↔ `cmd/events_generate.go`. When you add
-or refactor a provider, follow the same pattern.
+Current pairs: `cmd/events_sync.go` ↔ `cmd/events_generate.go`, and
+`cmd/proposals_sync.go` ↔ `cmd/proposals_generate.go` (Discord forum threads;
+`cmd/proposals.go` is the read-only list command on top). When you add or
+refactor a provider, follow the same pattern.
+
+Discord has two shapes and they do not share a command: plain text channels are
+mirrored message-by-message by `chb messages sync` (settings: `discord.channels`),
+forum channels are mirrored thread-by-thread by `chb proposals sync` (settings:
+`discord.forums`). A forum parent has no messages of its own, so never route one
+through the messages sync.
 
 ## Time handling
 

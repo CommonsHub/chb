@@ -29,21 +29,23 @@ const (
 // AppDataDir returns the directory for app configuration/state files.
 // Defaults to ~/.chb and can be overridden with APP_DATA_DIR.
 func AppDataDir() string {
+	dir := appDataDirPath()
+	_ = os.MkdirAll(dir, 0755)
+	return dir
+}
+
+// appDataDirPath resolves the app data directory without creating it, so the
+// mount guard in EnsureDataRootsMounted can inspect the path before anything
+// materialises a directory tree on an unmounted drive's mount point.
+func appDataDirPath() string {
 	if d := os.Getenv("APP_DATA_DIR"); d != "" {
-		if err := os.MkdirAll(d, 0755); err != nil {
-			return d
-		}
 		return d
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		dir := filepath.Join(".", ".chb")
-		_ = os.MkdirAll(dir, 0755)
-		return dir
+		return filepath.Join(".", ".chb")
 	}
-	dir := filepath.Join(home, ".chb")
-	_ = os.MkdirAll(dir, 0755)
-	return dir
+	return filepath.Join(home, ".chb")
 }
 
 // chbDir returns the app data directory. Kept as an internal compatibility
@@ -372,9 +374,16 @@ type OdooProduct struct {
 
 // DiscordSettings holds Discord configuration
 type DiscordSettings struct {
-	GuildID  string            `json:"guildId"`
-	Roles    map[string]string `json:"roles"`
-	Channels json.RawMessage   `json:"channels"`
+	GuildID string            `json:"guildId"`
+	Roles   map[string]string `json:"roles"`
+	// Channels are plain text channels, mirrored message-by-message by
+	// `chb messages sync`.
+	Channels json.RawMessage `json:"channels"`
+	// Forums are forum channels (Discord type 15). Their content lives in
+	// threads, so they are deliberately NOT in Channels: a message sync of a
+	// forum parent returns nothing. `chb proposals sync` mirrors them
+	// thread-by-thread instead. Keyed by name, e.g. {"proposals": "1280…"}.
+	Forums map[string]string `json:"forums,omitempty"`
 }
 
 // FinanceSettings holds finance configuration

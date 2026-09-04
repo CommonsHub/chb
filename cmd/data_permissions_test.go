@@ -224,3 +224,87 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 		t.Fatalf("mode for %s = %o, want %o", path, got, want)
 	}
 }
+
+// A $DATA_DIR whose contents chb cannot chmod — a shared or mounted directory
+// owned by another user — must not fail the write. The permission policy is a
+// best-effort tightening; a refused chmod is not a write error.
+func TestApplyDataPathPolicyTolerantOfPermissionErrors(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can chmod anything; the EPERM path is unreachable")
+	}
+	baseDir := t.TempDir()
+	monthDir := filepath.Join(baseDir, "2026", "04")
+	if err := os.MkdirAll(monthDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	target := filepath.Join(monthDir, "generated", "events.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("{}"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Drop search permission on the base directory so every chmod below it is
+	// refused. applyDataPathPolicy never chmods baseDir itself, so it cannot
+	// undo this.
+	if err := os.Chmod(baseDir, 0000); err != nil {
+		t.Fatalf("chmod base dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(baseDir, 0755) })
+
+	if err := applyDataPathPolicy(baseDir, target, false); err != nil {
+		t.Fatalf("applyDataPathPolicy returned %v, want nil for a refused chmod", err)
+	}
+}
+
+// "restricted" is served — to the member it belongs to, once signed in —
+// while "private" is served to nobody. They differ in who may read them, not
+// in how they are stored: both stay out of public output, out of the PII
+// scrubber, and behind a 0700 directory.
+func TestRestrictedTreeIsTreatedAsNonPublic(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.Chmod(dataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+
+	path := filepath.Join(DataDir(), "latest", "generated", "restricted", "members", "abc.json")
+	// A name that looks like an email is exactly what the guard scrubs from
+	// public files; a restricted file must keep it.
+	payload := []byte(`{"firstName":"ada@example.org"}`)
+	if err := writeDataFile(path, payload); err != nil {
+		t.Fatalf("write restricted file: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("restricted file was scrubbed: %s", got)
+	}
+	assertMode(t, filepath.Join(dataDir, "latest", "generated", "restricted"), 0700)
+	assertMode(t, filepath.Dir(path), 0700)
+}
+
+func TestPathSegmentClassification(t *testing.T) {
+	restricted := filepath.Join("latest", "generated", "restricted", "members", "x.json")
+	private := filepath.Join("latest", "generated", "private", "enrichment.json")
+	public := filepath.Join("latest", "generated", "members.json")
+
+	if !pathHasRestrictedSegment(restricted) || pathHasPrivateSegment(restricted) {
+		t.Error("restricted path misclassified")
+	}
+	if !pathHasPrivateSegment(private) || pathHasRestrictedSegment(private) {
+		t.Error("private path misclassified")
+	}
+	if pathIsNonPublic(public) {
+		t.Error("public path treated as non-public")
+	}
+	for _, p := range []string{restricted, private} {
+		if !pathIsNonPublic(p) {
+			t.Errorf("%s should be non-public", p)
+		}
+	}
+}

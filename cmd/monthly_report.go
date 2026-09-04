@@ -129,6 +129,10 @@ type MonthlyReportBalance struct {
 	Delta    float64  `json:"delta"`
 	Computed bool     `json:"computed"`
 	Verified bool     `json:"verified"`
+	// Anchored marks a balance rolled back from a real live figure rather than
+	// accumulated from zero. An unanchored balance has the right shape but an
+	// arbitrary level, so it must never be presented as "what we have".
+	Anchored bool `json:"anchored,omitempty"`
 }
 
 type MonthlyReportCurrency struct {
@@ -178,9 +182,10 @@ func generateMonthlyReportGo(dataDir, year, month string, settings *Settings) bo
 		Currencies:  buildMonthlyReportCurrencies(dataDir, year, month),
 		Collectives: collectives,
 		Categories:  categories,
-		Notes: []string{
-			"opening and ending balances are omitted until a source provides full-history, live-balance verification",
-		},
+		// The balance note is written by the cross-month rollup, which is the
+		// only pass that can see every month at once. Until it runs, say
+		// nothing rather than assert a stale disclaimer.
+		Notes: nil,
 	}
 
 	ctx := MonthlyReportContext{DataDir: dataDir, Settings: settings}
@@ -274,10 +279,13 @@ func buildMonthlyReportCurrencies(dataDir, year, month string) []MonthlyReportCu
 		}
 		cur.Transactions++
 		amount := math.Abs(firstNonZeroFloat(tx.GrossAmount, tx.Amount, tx.NormalizedAmount, tx.NetAmount))
+		// MINT/BURN are the on-chain spellings of CREDIT/DEBIT — omitting
+		// them booked every EURe mint as a zero-value transaction, so the
+		// aggregated EUR row silently under-reported all on-chain flow.
 		switch strings.ToUpper(tx.Type) {
-		case "CREDIT":
+		case "CREDIT", "MINT":
 			cur.In = roundReportAmount(cur.In + amount)
-		case "DEBIT":
+		case "DEBIT", "BURN":
 			cur.Out = roundReportAmount(cur.Out + amount)
 		}
 		cur.Fees = roundReportAmount(cur.Fees + math.Abs(tx.Fee))
@@ -402,6 +410,16 @@ func buildMonthlyReportTaggedFlows(dataDir, year, month string) (collectives, ca
 	// but the cost is recognized elsewhere). A tx without a spread contributes
 	// its full amount as before.
 	for _, tx := range f.Transactions {
+		// INTERNAL is a move between two of the org's own accounts, not
+		// income or expense. txDelta signs anything that isn't IsOutgoing()
+		// as an inflow, so leaving these in booked both legs of a Stripe
+		// payout as revenue — double-counting money already recognised when
+		// the underlying charges landed. Accounts and Currencies already
+		// exclude INTERNAL from in/out; this keeps the three sections
+		// telling the same story.
+		if strings.EqualFold(tx.Type, "INTERNAL") {
+			continue
+		}
 		if len(tx.Spread) > 0 {
 			alloc, ok := spreadAllocationForMonth(tx.Spread, thisYM)
 			if !ok || alloc == 0 {
@@ -518,7 +536,11 @@ func buildMonthlyReportAccounts(dataDir, year, month string) []MonthlyReportAcco
 
 	accounts := map[string]*MonthlyReportAccount{}
 	for _, tx := range f.Transactions {
-		if tx.Provider == etherscansource.Source && strings.TrimSpace(tx.Account) == "" {
+		// TransactionEntry.Account is internal-only and is cleared when
+		// transactions.json is written, so it is always "" on the way back
+		// in. Identify the account by the canonical public handles instead
+		// — a row carrying neither can't be attributed to an account.
+		if strings.TrimSpace(tx.AccountSlug) == "" && strings.TrimSpace(tx.AccountID) == "" {
 			continue
 		}
 		chain := ""
@@ -533,12 +555,23 @@ func buildMonthlyReportAccounts(dataDir, year, month string) []MonthlyReportAcco
 		if currency == "" {
 			currency = "UNKNOWN"
 		}
-		key := strings.Join([]string{source, chain, tx.AccountSlug, tx.Account, currency}, "\x00")
+		// Group by the account SLUG, falling back to the id only when a row
+		// carries no slug. Keying on the id splits a community token into one
+		// row per holder — CHT alone produced 25 identical "cht" lines, since
+		// every member's wallet is its own accountId.
+		identity := tx.AccountSlug
+		if identity == "" {
+			identity = tx.AccountID
+		}
+		key := strings.Join([]string{source, chain, identity, currency}, "\x00")
 		acct := accounts[key]
 		if acct == nil {
 			acct = &MonthlyReportAccount{
-				Source:      source,
-				Account:     tx.Account,
+				Source: source,
+				// AccountID is the canonical public handle (e.g.
+				// "stripe:acct_…"); tx.Account is internal-only and never
+				// survives the write to transactions.json.
+				Account:     tx.AccountID,
 				AccountSlug: tx.AccountSlug,
 				AccountName: tx.AccountName,
 				Chain:       chain,
@@ -552,17 +585,21 @@ func buildMonthlyReportAccounts(dataDir, year, month string) []MonthlyReportAcco
 		}
 
 		amount := math.Abs(firstNonZeroFloat(tx.GrossAmount, tx.Amount, tx.NormalizedAmount, tx.NetAmount))
+		// MINT/BURN are the on-chain spellings of CREDIT/DEBIT — see
+		// TransactionEntry.IsIncoming/IsOutgoing, the canonical direction
+		// test used everywhere else. Falling through to `default` here
+		// would book every EURe mint as a zero-amount transfer.
 		switch strings.ToUpper(tx.Type) {
-		case "CREDIT":
+		case "CREDIT", "MINT":
 			acct.Counts.Credits++
 			acct.Amounts.In = roundReportAmount(acct.Amounts.In + amount)
-			if source == etherscansource.Source && tx.Account == "" {
+			if strings.EqualFold(tx.Type, "MINT") {
 				acct.Counts.Mints++
 			}
-		case "DEBIT":
+		case "DEBIT", "BURN":
 			acct.Counts.Debits++
 			acct.Amounts.Out = roundReportAmount(acct.Amounts.Out + amount)
-			if source == etherscansource.Source && tx.Account == "" {
+			if strings.EqualFold(tx.Type, "BURN") {
 				acct.Counts.Burns++
 			}
 		case "INTERNAL":
@@ -1125,6 +1162,74 @@ type GlobalSummaryFile struct {
 // order, fills in StartBalance / EndBalance for each collective row, and
 // writes latest/generated/summary.json with the lifetime aggregate. Returns
 // the number of collective entries in the global file.
+// readMonthlyReportFile loads one month's generated summary.json.
+func readMonthlyReportFile(dataDir, year, month string) (*MonthlyReportFile, error) {
+	data, err := os.ReadFile(filepath.Join(dataDir, year, month, "generated", "summary.json"))
+	if err != nil {
+		return nil, err
+	}
+	var file MonthlyReportFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		return nil, err
+	}
+	return &file, nil
+}
+
+// reconciliationNote replaces the old "balances are omitted" disclaimer with
+// what reconciliation actually found: how many accounts were anchored to a
+// live balance, and how much of that balance predates chb's records.
+func reconciliationNote(accounts []MonthlyReportAccount, recon map[reconciledAccountKey]accountReconciliation) string {
+	var anchored, covered int
+	var residual float64
+	for _, acct := range accounts {
+		r, ok := recon[accountRowKey(acct)]
+		if !ok || !r.HasAnchor {
+			continue
+		}
+		anchored++
+		if math.Abs(r.PreHistory) < 0.01 {
+			covered++
+			continue
+		}
+		residual += math.Abs(r.PreHistory)
+	}
+	switch {
+	case anchored == 0:
+		return "opening and ending balances are rolled forward from local history only — no live balance was cached to anchor them (run `chb accounts <slug> pull` to fetch one)"
+	case covered == anchored:
+		return fmt.Sprintf("balances anchored to live figures: the recorded transactions fully account for all %d anchored account%s", anchored, plural(anchored))
+	default:
+		// Deliberately does not claim which it is. A residual can be a genuine
+		// opening balance from before chb's records begin, or transactions
+		// that are simply missing — and nothing in the data distinguishes
+		// them, so asserting the benign reading would be a guess.
+		return fmt.Sprintf("balances anchored to live figures on %d account%s; %s is not covered by the recorded transactions — either an opening balance from before the records begin, or movements still missing",
+			anchored, plural(anchored), fmtEUR(residual))
+	}
+}
+
+func hasNote(notes []string, note string) bool {
+	for _, n := range notes {
+		if n == note {
+			return true
+		}
+	}
+	return false
+}
+
+// replaceBalanceNote swaps out any previous balance-related note so the list
+// does not accumulate one line per regeneration.
+func replaceBalanceNote(notes []string, note string) []string {
+	out := notes[:0:0]
+	for _, n := range notes {
+		if strings.Contains(n, "balance") {
+			continue
+		}
+		out = append(out, n)
+	}
+	return append(out, note)
+}
+
 func rebuildSummaryRollup(dataDir string) (int, error) {
 	type monthRef struct {
 		year, month, ym string
@@ -1143,6 +1248,25 @@ func rebuildSummaryRollup(dataDir string) (int, error) {
 		}
 	}
 	sort.Slice(months, func(i, j int) bool { return months[i].ym < months[j].ym })
+
+	// Account balances need every month's delta before any single month can be
+	// resolved, because they are rolled backwards from today's live balance.
+	// First pass collects the deltas; the second writes them back.
+	accountDeltas := map[reconciledAccountKey][]monthlyAccountDelta{}
+	for _, m := range months {
+		file, err := readMonthlyReportFile(dataDir, m.year, m.month)
+		if err != nil {
+			continue
+		}
+		for _, acct := range file.Accounts {
+			k := accountRowKey(acct)
+			accountDeltas[k] = append(accountDeltas[k], monthlyAccountDelta{
+				ym:  m.ym,
+				net: acct.Amounts.Net,
+			})
+		}
+	}
+	accountBalances, accountRecon := reconcileAccountBalances(accountDeltas, liveAccountAnchors())
 
 	// running cumulative balance keyed by (slug, currency)
 	balance := map[tagKey]float64{}
@@ -1198,6 +1322,24 @@ func rebuildSummaryRollup(dataDir string) (int, error) {
 				g.EndBalance = end // running global balance equals running per-month balance
 			}
 		}
+		for i := range file.Accounts {
+			acct := &file.Accounts[i]
+			perMonth, ok := accountBalances[accountRowKey(*acct)]
+			if !ok {
+				continue
+			}
+			if b, ok := perMonth[m.ym]; ok && acct.Balance != b {
+				acct.Balance = b
+				changed = true
+			}
+		}
+		if note := reconciliationNote(file.Accounts, accountRecon); note != "" {
+			if !hasNote(file.Notes, note) {
+				file.Notes = replaceBalanceNote(file.Notes, note)
+				changed = true
+			}
+		}
+
 		if changed {
 			out, err := marshalIndentedNoHTMLEscape(file)
 			if err == nil {

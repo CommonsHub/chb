@@ -172,7 +172,7 @@ func resolveDataDir() string {
 	if d := os.Getenv("DATA_DIR"); d != "" {
 		return d
 	}
-	return filepath.Join(AppDataDir(), "data")
+	return filepath.Join(appDataDirPath(), "data")
 }
 
 // writeMonthFile writes data to dataDir/year/month/<relPath> AND mirrors

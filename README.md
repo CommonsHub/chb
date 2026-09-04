@@ -95,6 +95,8 @@ Settings live under `$APP_DATA_DIR/settings/` (default `~/.chb/settings`):
 |---|---|
 | `APP_DATA_DIR` | App state root (default `~/.chb`) — settings, cached cursors, Nostr outbox. |
 | `DATA_DIR` | Generated data root (default `$APP_DATA_DIR/data`) — `YYYY/MM/providers/` + `YYYY/MM/generated/`. |
+| `CHB_REQUIRE_MOUNT` | Path that must be a mounted filesystem before chb runs — for data roots outside `/media`, `/run/media`, `/mnt`, `/Volumes` (those are guarded automatically). |
+| `CHB_SKIP_MOUNT_CHECK` | Set to `1` to disable that guard and write to the internal disk anyway. |
 | `LUMA_API_KEY` | Luma API key (enables rich event data). |
 | `ETHERSCAN_API_KEY` | Etherscan / Gnosisscan / Celoscan API key. |
 | `STRIPE_SECRET_KEY` | Stripe API key. |

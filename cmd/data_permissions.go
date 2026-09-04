@@ -80,7 +80,9 @@ func enforcePIIPolicy(path string, data []byte) []byte {
 	if !strings.HasSuffix(path, ".json") {
 		return data
 	}
-	if pathHasPrivateSegment(path) || pathHasProviderArchiveSegment(path) {
+	// Neither non-public tree is scrubbed: the guard exists to keep PII out of
+	// files anyone can read, and these are not those files.
+	if pathIsNonPublic(path) || pathHasProviderArchiveSegment(path) {
 		return data
 	}
 	cleaned, scrubbed := scrubNameFields(data)
@@ -129,21 +131,27 @@ func applyDataPathPolicy(baseDir, targetPath string, isDir bool) error {
 				continue
 			}
 			current = filepath.Join(current, part)
-			if part == "private" || providerArchivesStartAt(baseDir, current) {
+			if part == privateDirSegment || part == restrictedDirSegment ||
+				providerArchivesStartAt(baseDir, current) {
 				privateMode = true
 			}
 			mode := dataPublicDirMode
 			if privateMode {
 				mode = dataPrivateDirMode
 			}
-			if err := os.Chmod(current, mode); err != nil && !os.IsNotExist(err) {
+			// A directory we do not own (a shared $DATA_DIR, a mounted
+			// volume, a checkout owned by another user) rejects chmod with
+			// EPERM. That is not a reason to abort the write: the policy is a
+			// best-effort tightening, and the caller's data still belongs in
+			// the file it was headed for.
+			if err := os.Chmod(current, mode); err != nil && !os.IsNotExist(err) && !os.IsPermission(err) {
 				return err
 			}
 		}
 	}
 
 	if !isDir {
-		if err := os.Chmod(targetPath, dataFileMode); err != nil && !os.IsNotExist(err) {
+		if err := os.Chmod(targetPath, dataFileMode); err != nil && !os.IsNotExist(err) && !os.IsPermission(err) {
 			return err
 		}
 	}

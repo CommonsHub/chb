@@ -69,6 +69,11 @@ type MembersOutputFile struct {
 	GeneratedAt string         `json:"generatedAt"`
 	Summary     MembersSummary `json:"summary"`
 	Members     []Member       `json:"members"`
+	// OdooDerived marks a month whose Odoo membership was reconstructed from
+	// a later snapshot rather than captured while the month was current. Such
+	// a month can undercount — see deriveOdooSnapshotForMonth.
+	OdooDerived     bool   `json:"odooDerived,omitempty"`
+	OdooDerivedFrom string `json:"odooDerivedFrom,omitempty"`
 }
 
 type providerSubscription struct {
@@ -95,6 +100,11 @@ type providerSnapshot struct {
 	Provider      string                 `json:"provider"`
 	FetchedAt     string                 `json:"fetchedAt"`
 	Subscriptions []providerSubscription `json:"subscriptions"`
+	// Derived marks a snapshot reconstructed for a past month from a later
+	// one, rather than captured while that month was current. See
+	// deriveOdooSnapshotForMonth — such a month can undercount.
+	Derived     bool   `json:"derived,omitempty"`
+	DerivedFrom string `json:"derivedFrom,omitempty"`
 }
 
 // ── Command ─────────────────────────────────────────────────────────────────
@@ -112,12 +122,9 @@ func MembersSync(args []string) error {
 	odooURL := os.Getenv("ODOO_URL")
 	odooLogin := os.Getenv("ODOO_LOGIN")
 	odooPassword := os.Getenv("ODOO_PASSWORD")
-	salt := os.Getenv("EMAIL_HASH_SALT")
-
-	if salt == "" {
-		// Generate a random salt and persist it
-		salt = generateAndSaveSalt()
-		fmt.Printf("  %sGenerated EMAIL_HASH_SALT: %s%s\n", Fmt.Dim, salt, Fmt.Reset)
+	salt, err := resolveEmailHashSalt(args)
+	if err != nil {
+		return err
 	}
 
 	stripeOnly := HasFlag(args, "--stripe-only")
@@ -135,7 +142,11 @@ func MembersSync(args []string) error {
 		return fmt.Errorf("failed to load settings: %w", err)
 	}
 	stripeProductID := settings.Membership.Stripe.ProductID
-	stripeNeedsFetch := false
+	// A past month is normally served from its cached snapshot. --force
+	// re-fetches anyway, which is the only way to rebuild months whose
+	// snapshot was written by an earlier, wrong version of the month filter —
+	// hand-deleting files under providers/ was otherwise the only route.
+	stripeNeedsFetch := HasFlag(args, "--force", "--refresh")
 	now := time.Now()
 	for _, ym := range months {
 		yearStr := strconv.Itoa(ym.year)
@@ -171,6 +182,13 @@ func MembersSync(args []string) error {
 	if doOdoo && (odooURL == "" || odooLogin == "" || odooPassword == "") {
 		Warnf("%s⚠ ODOO_URL/ODOO_LOGIN/ODOO_PASSWORD not set, skipping Odoo%s", Fmt.Yellow, Fmt.Reset)
 		doOdoo = false
+	}
+
+	// Funders are read once: the file states each term outright, so no month
+	// needs a fetch and a past month is as reliable as the current one.
+	funders, funderErr := loadFunders()
+	if funderErr != nil {
+		Warnf("%s⚠ %v — continuing without funders%s", Fmt.Yellow, funderErr, Fmt.Reset)
 	}
 
 	for _, ym := range months {
@@ -226,6 +244,16 @@ func MembersSync(args []string) error {
 			}
 		}
 
+		// Funders last: Stripe and Odoo are the systems of record, so a person
+		// who appears in either keeps that entry (see mergeProviderSnapshots).
+		if len(funders) > 0 {
+			funderSnap := buildFundersSnapshot(funders, year, time.Month(month), salt)
+			if len(funderSnap.Subscriptions) > 0 {
+				fmt.Printf("  Funders: %d membership(s)\n", len(funderSnap.Subscriptions))
+				snapshots = append(snapshots, funderSnap)
+			}
+		}
+
 		if len(snapshots) == 0 {
 			fmt.Println("  No data for this month")
 			continue
@@ -256,6 +284,42 @@ func MembersSync(args []string) error {
 
 // ── Stripe helpers ──────────────────────────────────────────────────────────
 
+// stripeSubscriptionRanInMonth reports whether a Stripe subscription was live
+// at any point in the month bounded by monthStart..lastDay (Unix seconds).
+//
+// A live subscription has been running continuously since it was created —
+// Stripe moves a lapsed one to canceled / unpaid / incomplete_expired — so
+// "active now" implies "active then", and the creation date is the only bound
+// that matters.
+//
+// This used to also require the CURRENT billing period to overlap the target
+// month, which is only ever true for the month or two before the sync. A
+// monthly subscription synced in September has a current period of roughly
+// Sep 5 → Oct 5, so every monthly member silently vanished from May, June and
+// July, while the yearly ones — whose current period is twelve months long —
+// survived. That was the whole of the 43 → 8 cliff between August and July:
+// 36 monthly members, none of whom had actually left.
+func stripeSubscriptionRanInMonth(sub stripesource.Subscription, monthStart, lastDay int64) bool {
+	if sub.Created > lastDay {
+		return false // not signed up yet
+	}
+	switch sub.Status {
+	case "active", "trialing", "past_due":
+		return true
+	case "canceled":
+		// Still counted for the month it was cancelled in; excluded once the
+		// cancellation predates the month entirely.
+		endedAt := sub.CanceledAt
+		if endedAt == nil {
+			endedAt = sub.EndedAt
+		}
+		return endedAt == nil || *endedAt >= monthStart
+	default:
+		// incomplete, incomplete_expired, unpaid — never a paying member.
+		return false
+	}
+}
+
 func buildStripeMonthSnapshot(subs []stripesource.Subscription, year, month int, salt, productID, apiKey string, cache map[string]*stripesource.Customer) providerSnapshot {
 	monthStart := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC).Unix()
 	lastDay := time.Date(year, time.Month(month)+1, 0, 23, 59, 59, 0, time.UTC).Unix()
@@ -263,24 +327,7 @@ func buildStripeMonthSnapshot(subs []stripesource.Subscription, year, month int,
 	var result []providerSubscription
 
 	for _, sub := range subs {
-		if sub.Created > lastDay {
-			continue
-		}
-
-		active := sub.Status == "active" || sub.Status == "trialing" || sub.Status == "past_due"
-		if active {
-			if sub.CurrentPeriodStart > lastDay || sub.CurrentPeriodEnd < monthStart {
-				continue
-			}
-		} else if sub.Status == "canceled" {
-			canceledAt := sub.CanceledAt
-			if canceledAt == nil {
-				canceledAt = sub.EndedAt
-			}
-			if canceledAt != nil && *canceledAt < monthStart {
-				continue
-			}
-		} else {
+		if !stripeSubscriptionRanInMonth(sub, monthStart, lastDay) {
 			continue
 		}
 
@@ -375,6 +422,39 @@ func buildStripeMonthSnapshot(subs []stripesource.Subscription, year, month int,
 		FetchedAt:     time.Now().UTC().Format(time.RFC3339),
 		Subscriptions: result,
 	}
+}
+
+// resolveEmailHashSalt returns the salt that turns a member's email into their
+// membership id. It is deliberately NOT minted on demand.
+//
+// The salt IS the identity: every emailHash, every per-member history file and
+// every match the website can make depends on the same salt producing the same
+// digest. Minting a fresh one silently re-identifies the entire membership —
+// 2026-04 was once written under a different salt and its 61 continuing members
+// read as 61 one-month strangers, and setup.go:165 records an earlier round of
+// the same failure. A missing salt is a configuration problem to be fixed once,
+// not a value to invent per run.
+//
+// First-time setup passes --init-salt to mint and persist one; every run after
+// that reads it from the environment (config.env, or the host's own env).
+func resolveEmailHashSalt(args []string) (string, error) {
+	if salt := strings.TrimSpace(os.Getenv("EMAIL_HASH_SALT")); salt != "" {
+		return salt, nil
+	}
+	if HasFlag(args, "--init-salt") {
+		salt := generateAndSaveSalt()
+		fmt.Printf("  %sGenerated EMAIL_HASH_SALT: %s%s\n", Fmt.Dim, salt, Fmt.Reset)
+		fmt.Printf("  %sSaved to %s. Set the same value on the website host, or it\n", Fmt.Dim, configEnvPath())
+		fmt.Printf("  cannot identify members.%s\n", Fmt.Reset)
+		return salt, nil
+	}
+	return "", fmt.Errorf("EMAIL_HASH_SALT is not set.\n\n"+
+		"  It is the membership identity: the same email must always hash to the\n"+
+		"  same id, or no member can be matched from one month to the next.\n"+
+		"  Minting one here would re-identify everybody, so this refuses instead.\n\n"+
+		"  If a salt already exists (another machine, the website host), put it in\n"+
+		"  %s or the environment.\n"+
+		"  For a first-ever setup: chb members sync --init-salt", configEnvPath())
 }
 
 func generateAndSaveSalt() string {
@@ -641,6 +721,8 @@ func printMembersSyncHelp() {
 %sOPTIONS%s
   %s--month%s <date-range> Fetch a specific date/month/year range
   %s--backfill%s           Process all months since 2024-06
+  %s--init-salt%s          First-ever setup only: mint and save EMAIL_HASH_SALT
+  %s--force%s              Re-fetch past months instead of reusing cached snapshots
   %s--stripe-only%s        Only fetch from Stripe
   %s--odoo-only%s          Only fetch from Odoo
   %s--help, -h%s           Show this help
@@ -650,12 +732,18 @@ func printMembersSyncHelp() {
   %sODOO_URL%s             Odoo instance URL (e.g. https://mycompany.odoo.com)
   %sODOO_LOGIN%s           Odoo login email
   %sODOO_PASSWORD%s        Odoo password or API key
-  %sEMAIL_HASH_SALT%s      Salt for email hashing (required)
+  %sEMAIL_HASH_SALT%s      Salt for email hashing (required). It IS the membership
+                       identity — the same email must always hash to the same
+                       id. Set the same value on the website host: without it
+                       the site cannot identify a member, and shows no member
+                       data. Never rotate it; every id changes if you do.
 `,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,

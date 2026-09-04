@@ -13,6 +13,10 @@ import (
 )
 
 // redactAPIKey hides the apikey query value so URLs are safe to log.
+// APIBaseURL is the Etherscan V2 multichain endpoint. A variable so tests can
+// point the package at an httptest server.
+var APIBaseURL = "https://api.etherscan.io/v2/api"
+
 func redactAPIKey(url, apiKey string) string {
 	if apiKey == "" {
 		return url
@@ -46,7 +50,7 @@ func bodySnippet(body []byte) string {
 }
 
 func FetchTokenTransfers(acc Account, apiKey string) ([]TokenTransfer, error) {
-	baseURL := fmt.Sprintf("https://api.etherscan.io/v2/api?chainid=%d", acc.ChainID)
+	baseURL := fmt.Sprintf("%s?chainid=%d", APIBaseURL, acc.ChainID)
 
 	var url string
 	if acc.Address == "" || strings.EqualFold(acc.Address, acc.TokenAddress) {
@@ -57,15 +61,24 @@ func FetchTokenTransfers(acc Account, apiKey string) ([]TokenTransfer, error) {
 			baseURL, acc.TokenAddress, acc.Address, apiKey)
 	}
 
+	// The daily cap is process-wide: once one account has hit it, every other
+	// account in this sync would burn its full retry budget against a wall
+	// that cannot lift until the reset time.
+	if notice, blocked := QuotaExhausted(); blocked {
+		return nil, fmt.Errorf("etherscan daily free-tier quota exhausted (chain=%d contract=%s): %s",
+			acc.ChainID, acc.TokenAddress, notice)
+	}
+
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * time.Second)
+			time.Sleep(retryDelay(attempt))
 		}
 
 		ctx := fmt.Sprintf("chain=%d contract=%s address=%s url=%s",
 			acc.ChainID, acc.TokenAddress, acc.Address, redactAPIKey(url, apiKey))
 
+		throttle()
 		resp, err := http.Get(url)
 		if err != nil {
 			lastErr = fmt.Errorf("etherscan request failed (%s): %w", ctx, err)
@@ -104,14 +117,16 @@ func FetchTokenTransfers(acc Account, apiKey string) ([]TokenTransfer, error) {
 			detail := resultString(result.Result)
 			apiErr := fmt.Errorf("etherscan API error: status=%s message=%q result=%q (%s)",
 				result.Status, result.Message, detail, ctx)
-			// The actionable reason often lives in `result` ("Max rate limit
-			// reached"), not just `message` ("NOTOK") — check both.
-			if strings.Contains(strings.ToLower(result.Message+" "+detail), "rate limit") {
-				lastErr = fmt.Errorf("rate limited: %w", apiErr)
-				time.Sleep(2 * time.Second)
+			switch classifyError(result.Message, detail) {
+			case errQuota:
+				noteQuotaExhausted(detail)
+				return nil, fmt.Errorf("etherscan daily free-tier quota exhausted — retrying will not help until it resets: %w", apiErr)
+			case errTransient:
+				lastErr = fmt.Errorf("transient etherscan error: %w", apiErr)
 				continue
+			default:
+				return nil, apiErr
 			}
-			return nil, apiErr
 		}
 
 		var transfers []TokenTransfer
@@ -129,11 +144,11 @@ func FetchTokenTransfers(acc Account, apiKey string) ([]TokenTransfer, error) {
 		return transfers, nil
 	}
 
-	return nil, fmt.Errorf("etherscan: failed after 3 attempts: %w", lastErr)
+	return nil, fmt.Errorf("etherscan: failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
 func PeekLatest(acc Account, apiKey string) (string, error) {
-	baseURL := fmt.Sprintf("https://api.etherscan.io/v2/api?chainid=%d", acc.ChainID)
+	baseURL := fmt.Sprintf("%s?chainid=%d", APIBaseURL, acc.ChainID)
 	var url string
 	if acc.Address == "" || strings.EqualFold(acc.Address, acc.TokenAddress) {
 		url = fmt.Sprintf("%s&module=account&action=tokentx&contractaddress=%s&startblock=0&endblock=99999999&page=1&offset=1&sort=desc&apikey=%s",
@@ -145,6 +160,7 @@ func PeekLatest(acc Account, apiKey string) (string, error) {
 	ctx := fmt.Sprintf("chain=%d contract=%s address=%s url=%s",
 		acc.ChainID, acc.TokenAddress, acc.Address, redactAPIKey(url, apiKey))
 
+	throttle()
 	resp, err := http.Get(url)
 	if err != nil {
 		return "", fmt.Errorf("etherscan peek request failed (%s): %w", ctx, err)
