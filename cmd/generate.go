@@ -908,6 +908,16 @@ func Generate(args []string) error {
 		return Pluralize(written, "month", "")
 	})
 
+	genStep("Proposals", func() string {
+		// Cross-month by nature: a proposal is a forum thread that outlives
+		// the month it was opened in, so this rebuilds the whole index
+		// rather than looping over scopes.
+		if err := GenerateProposals(nil); err != nil {
+			return "error: " + err.Error()
+		}
+		return ""
+	})
+
 	genStep("Inbound-spread indexes", func() string {
 		if err := rebuildInboundSpreads(dataDir); err != nil {
 			return "error: " + err.Error()

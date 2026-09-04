@@ -35,8 +35,13 @@ Current providers:
   data lives under `providers/etherscan/<chain>/`.
 - `providers/monerium`: Monerium SEPA order archives.
 - `providers/nostr`: Nostr annotations and chain tx/address metadata.
-- `providers/discord`: Discord messages for monitored channels and downloaded
-  Discord image attachments referenced by `generated/images.json`.
+- `providers/discord`: Discord messages for monitored channels, forum threads
+  for monitored forum channels (`<forumId>/threads/<threadId>.json` plus a
+  `<forumId>/forum.json` snapshot — see `chb proposals sync`), and downloaded
+  Discord image attachments referenced by `generated/images.json`. A forum the
+  bot may list but not read is archived with `"metadataOnly": true` (titles,
+  ids and activity dates only); a later sync with read access replaces those
+  files, and a full archive is never downgraded back to metadata.
 - `providers/odoo`: Odoo invoices, bills, subscriptions, analytic enrichment,
   and private attachment metadata/binaries.
 - `providers/ics`: Monthly ICS calendar archives for room bookings and configured

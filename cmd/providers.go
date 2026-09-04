@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -162,6 +163,23 @@ func providerCommandSpecs() []providerCommandSpec {
 			Generate: GenerateMessages,
 		},
 		{
+			Name:        "proposals",
+			Description: "Discord proposals forum: one thread per proposal.",
+			Commands:    []string{"sync", "generate"},
+			Sync: func(args []string) (string, error) {
+				n, err := ProposalsSync(args)
+				if errors.Is(err, errProposalsForumAccess) {
+					// A missing Discord permission is not a reason to abort
+					// the pull of every other provider — surface it as a
+					// warning and let the row say why it was skipped.
+					Warnf("%s⚠ Proposals: %v%s", Fmt.Yellow, err, Fmt.Reset)
+					return "skipped: bot has no access to the forum", nil
+				}
+				return formatCountSummary(n, "updated proposal", "updated proposals"), err
+			},
+			Generate: GenerateProposals,
+		},
+		{
 			Name:        "odoo",
 			Description: "Odoo invoices, bills, attachments, and accounting metadata.",
 			Commands:    []string{"sync", "generate"},
@@ -261,6 +279,8 @@ func ProvidersCommand(args []string) error {
 					return GenerateMessages(rest[1:])
 				case "members":
 					return GenerateMembers(rest[1:])
+				case "proposals":
+					return GenerateProposals(rest[1:])
 				}
 			}
 			return Generate(rest)

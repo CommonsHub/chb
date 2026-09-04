@@ -32,6 +32,16 @@ func exitAfterDiagnostics() {
 
 func main() {
 	cmd.Version = cmd.ResolveVersion(VERSION)
+
+	// First thing, before anything creates a directory or opens the
+	// diagnostics log ($DATA_DIR/logs): if a data root lives on an external
+	// drive that isn't mounted, stop. Reported without cmd.Errorf on purpose
+	// — that would create the very tree we're refusing to write.
+	if err := cmd.EnsureDataRootsMounted(); err != nil {
+		os.Stderr.WriteString("\nError: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+
 	cmd.EnsureSettingsBootstrapped()
 	odooURLExplicit := os.Getenv("ODOO_URL") != ""
 	odooDBExplicit := os.Getenv("ODOO_DATABASE") != ""
@@ -252,6 +262,27 @@ func main() {
 			cmd.MessagesStats(args[2:])
 		} else {
 			exitWithUsage("%sUsage: chb messages [sync|stats]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
+		}
+	case "proposals":
+		// Discord FORUM channel (one thread per proposal). Deliberately not
+		// part of `chb messages` — a forum parent has no messages of its own.
+		sub := ""
+		if len(args) > 1 {
+			sub = args[1]
+		}
+		switch sub {
+		case "pull", "sync":
+			if _, err := cmd.ProposalsSync(args[2:]); err != nil {
+				exitWithError(err)
+			}
+		case "generate":
+			if err := cmd.GenerateProposals(args[2:]); err != nil {
+				exitWithError(err)
+			}
+		default:
+			if err := cmd.ProposalsList(args[1:]); err != nil {
+				exitWithError(err)
+			}
 		}
 	case "images":
 		if len(args) > 1 && (args[1] == "sync" || args[1] == "help" || args[1] == "--help" || args[1] == "-h") {
@@ -719,6 +750,9 @@ func needsWritableDataDir(args []string) bool {
 		return len(args) > 2 && (strings.EqualFold(args[2], "sync") || strings.EqualFold(args[2], "generate"))
 	case "calendars", "invoices", "bills", "messages", "images", "attachments", "members", "odoo":
 		return len(args) > 1 && strings.EqualFold(args[1], "sync")
+	case "proposals":
+		return len(args) > 1 && (strings.EqualFold(args[1], "sync") || strings.EqualFold(args[1], "pull") ||
+			strings.EqualFold(args[1], "generate"))
 	case "transactions":
 		return hasArg(args[1:], "sync")
 	default:
